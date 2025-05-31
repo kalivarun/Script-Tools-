@@ -1,7 +1,7 @@
 module.exports = async (req, res) => {
   try {
     // Hardcoded file list for files in /public
-    const files = ['webinfo.ps1', 'newfile.ps1', 'help.txt'];
+    const files = ['webinfo.ps1', 'help.txt'];
 
     // Generate HTML for directory listing
     let html = `
