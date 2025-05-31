@@ -1,1 +1,1 @@
-irm https://5cript5.vercel.app/webinfo.txt | iex     (tool used for finding directory listing in a website) 
+finding directory listing in a website: irm https://5cript5.vercel.app/webinfo.txt | iex     
