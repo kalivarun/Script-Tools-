@@ -6,7 +6,7 @@
     },
     {
       "source": "/:file*",
-      "destination": "/public/:file*"
+      "destination": "/Public/:file*"
     }
   ]
 }
