@@ -1,10 +1,10 @@
-const fs = require('fs').promises;
-const path = require('path');
-
 module.exports = async (req, res) => {
   try {
-    const publicDir = path.join(process.cwd(), 'public');
-    const files = await fs.readdir(publicDir);
+    // Hardcoded file list (update this when adding new files)
+    const files = ['webinfo.ps1', 'newfile.ps1', 'help.txt'];
+
+    // Alternatively, use an environment variable (set in Vercel Dashboard)
+    // const files = process.env.FILE_LIST ? process.env.FILE_LIST.split(',') : ['webinfo.ps1', 'newfile.ps1', 'help.txt'];
 
     // Generate HTML for directory listing
     let html = `
@@ -40,6 +40,6 @@ module.exports = async (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.status(200).send(html);
   } catch (error) {
-    res.status(500).send('Error reading directory');
+    res.status(500).send(`Error generating directory listing: ${error.message}`);
   }
 };
