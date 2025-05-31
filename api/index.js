@@ -1,10 +1,7 @@
 module.exports = async (req, res) => {
   try {
-    // Hardcoded file list (update this when adding new files)
+    // Hardcoded file list for files in /public
     const files = ['webinfo.ps1', 'newfile.ps1', 'help.txt'];
-
-    // Alternatively, use an environment variable (set in Vercel Dashboard)
-    // const files = process.env.FILE_LIST ? process.env.FILE_LIST.split(',') : ['webinfo.ps1', 'newfile.ps1', 'help.txt'];
 
     // Generate HTML for directory listing
     let html = `
