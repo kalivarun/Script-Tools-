@@ -1,0 +1,24 @@
+Hello siri ✨ || Hello sreeya ✨
+
+As you know u r going to be performing a threat intelegence activity the communication in this mission can involve even dark web links stay alert and cautious ( dont mind my spelling mistakes )
+
+so the task is simlpe...you guys need to unlock this website
+In order to do that u need to perform directory bruteforcing on this site u need to find the particular directory which is active on this site then u will be able to unlock this sire
+
+site: https://5cript5.vercel.app/    <-- u guys need to unlock this site
+
+u guys can cross check with curl comamnd to check if u have the status code as 200 until then ur status code will be like showen in below 
+
+C:\hero\stoic>curl -I https://5cript5.vercel.app/
+HTTP/1.1 404 Not Found
+Cache-Control: public, max-age=0, must-revalidate
+Content-Length: 79
+Content-Type: text/plain; charset=utf-8
+Date: Sun, 01 Jun 2025 15:42:03 GMT
+Server: Vercel
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+X-Vercel-Error: NOT_FOUND
+X-Vercel-Id: fra1::p2pj8-1748792523540-25363c174680
+
+
+this note.txt will be updating after each mission so stay ahead 
