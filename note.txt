@@ -3,8 +3,11 @@ Hello siri ✨ || Hello sreeya ✨
 As you know u r going to be performing a threat intelegence activity the communication in this mission can involve even dark web links stay alert and cautious ( dont mind my spelling mistakes )
 
 so the task is simlpe...you guys need to unlock this website
-In order to do that u need to perform directory bruteforcing on this site u need to find the particular directory which is active on this site then u will be able to unlock this sire
-
+In order to do that u need to perform directory bruteforcing on this site u need to find the particular directory which is active on this site then u 
+will be able to unlock this site 
+--------------------------------------------------------------------------------------------------------------------------------
+note: after finding the directory u both need to send the found url in the google meet chat then only the site will be unlocked 
+--------------------------------------------------------------------------------------------------------------------------------
 site: https://5cript5.vercel.app/    <-- u guys need to unlock this site
 
 u guys can cross check with curl comamnd to check if u have the status code as 200 until then ur status code will be like showen in below 
