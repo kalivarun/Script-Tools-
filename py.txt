@@ -1,42 +1,79 @@
+import platform
+import subprocess
+import ipaddress
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 # ANSI color codes
 GREEN = "\033[32m"
 RESET = "\033[0m"
 
-# Top border
-print("+" + "-" * 80 + "+")
+def ping(ip):
+    """Ping an IP address to check if it's alive."""
+    param = "-n" if platform.system().lower() == "windows" else "-c"
+    try:
+        result = subprocess.run(["ping", param, "1", "-w", "100", str(ip)],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True)
+        if "ttl" in result.stdout.lower():  # ttl is common in successful ping
+            return str(ip)
+    except Exception:
+        pass
+    return None
 
-# Empty lines before image
-for _ in range(3):
-    print("|" + " " * 80 + "|")
+def get_mac(ip):
+    """Get MAC address from ARP table (after successful ping)."""
+    try:
+        if platform.system().lower() == "windows":
+            result = subprocess.check_output(["arp", "-a", ip], text=True)
+        else:
+            result = subprocess.check_output(["arp", "-n", ip], text=True)
+        lines = result.splitlines()
+        for line in lines:
+            if ip in line:
+                parts = line.split()
+                for part in parts:
+                    if ":" in part or "-" in part:
+                        return part
+    except Exception:
+        pass
+    return "Unknown"
 
-# Image block (example lines)
-image_lines = [
-    "                                    ..  .:.                                     ",
-    "                                  ':   .oNMK;                                   ",
-    "                                 ,c    .dMMMMd                                  ",
-    "                                .d  .,:lkKNWMMo                                 ",
-    "                                dKo;,'....'cOMM;                                ",
-    "                              .kd.           .lNo                               ",
-    "                              x0               l0                               ",
-    "                              .kk.            cK,.                              ",
-    "                            d0lkNN:         'KOONWNk.                           ",
-    "                          .k0   . ::       .:  . :dkK.                          ",
-    "                         oO..                    .  oK..                        ",
-    "                       cNc    .......''''''''',,,,.  kKK.                       ",
-    "                     .lWd;   ,x,,,'''''..........l,    cNO.                     ",
-    "                   .OMMK;    .l                  :.    'kMl                     ",
-    "                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   ",
-    "                              ,       ,dd'       '   ..,;,.                     ",
-    "                              .                  .                              ",
-]
+def main():
+    print("+" + "-" * 80 + "+")
+    for _ in range(3):
+        print("|" + " " * 80 + "|")
 
-# Print image with green color
-for line in image_lines:
-    print("|" + GREEN + line + RESET + "|")
+    print("|" + GREEN + "                    Scanning local network for active IPs...                   " + RESET + "|")
 
-# Empty lines after image
-for _ in range(4):
-    print("|" + " " * 80 + "|")
+    for _ in range(2):
+        print("|" + " " * 80 + "|")
 
-# Bottom border
-print("+" + "-" * 80 + "+")
+    subnet_input = input("Enter subnet (e.g., 192.168.1): ").strip()
+    base_ip = f"{subnet_input}.0/24"
+
+    try:
+        network = ipaddress.ip_network(base_ip, strict=False)
+    except ValueError:
+        print("Invalid subnet.")
+        return
+
+    active_ips = []
+
+    print("Scanning...")
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        futures = {executor.submit(ping, ip): ip for ip in network.hosts()}
+        for future in as_completed(futures):
+            ip = future.result()
+            if ip:
+                mac = get_mac(ip)
+                print(f"{GREEN}Active: {ip} - MAC: {mac}{RESET}")
+                active_ips.append((ip, mac))
+
+    print("\nScan complete.")
+    print(f"Total active IPs: {len(active_ips)}")
+
+    print("+" + "-" * 80 + "+")
+
+if __name__ == "__main__":
+    main()
