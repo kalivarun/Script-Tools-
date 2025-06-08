@@ -1,0 +1,1 @@
+$base = Read-Host "Enter first two octets (e.g. 192.168)"; 0..254 | ForEach-Object { $ip = "$base.$_.1"; if ((ping -n 1 -w 200 $ip) -match "bytes=32") { Write-Host "Gateway active: $ip" -ForegroundColor Green } }
