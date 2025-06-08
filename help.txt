@@ -1,3 +1,8 @@
 Help menu:
 
-"finding directory listing in a website": irm https://5cript5.vercel.app/webinfo.txt | iex     
+Powershell commands: 
+irm https://5cript5.vercel.app/webinfo.txt | iex   --  Finding directory listing in a website
+irm https://5cript5.vercel.app/0-16.txt | iex      --  To Find all the subnets in the network (only detects *.*.*.1 gateway) 
+irm https://5cript5.vercel.app/0-24.txt | iex      --  To Find all the active devices in the network 
+
+
