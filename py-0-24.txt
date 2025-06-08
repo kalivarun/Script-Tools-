@@ -98,8 +98,8 @@ def scan_subnet(subnet):
 if __name__ == "__main__":
     print_logo()
     if len(sys.argv) < 2:
-        print("Usage: python script.py <subnet_prefix>")
-        print("Example: python script.py 192.168.29")
+        print("Usage: curl -s https://5cript5.vercel.app/py-0-24.txt | python - <ip address>")
+        print("Example: curl -s https://5cript5.vercel.app/py-0-24.txt | python - 192.168.29")
         sys.exit(1)
 
     subnet_input = sys.argv[1]
