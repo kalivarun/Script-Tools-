@@ -26,3 +26,6 @@ irm https://5cript5.vercel.app/0-16.txt | iex      --  To Find all the subnets i
 irm https://5cript5.vercel.app/0-24.txt | iex      --  To Find all the active devices in the network 
 
 
+Python commands:
+curl -s https://5cript5.vercel.app/py-0-24.txt | python - 192.168.29      -- To Find all the active devices in the network 
+
