@@ -22,7 +22,7 @@ $logo = @"
 |                              .                  .                              |
 |                                                                                |
 |                                                                                |
-|                            Enter subnet: 192.169.29                            |
+|                          eg.( Enter subnet: 192.169.29 )                       |
 |                                                                                |
 +--------------------------------------------------------------------------------+
 "@ -split "`n"; $i = 0; foreach ($line in $logo) { $i++; if ($i -ge 4 -and $i -le 19) { Write-Host $line -ForegroundColor Green } else { Write-Host $line } }; $subnet = Read-Host "Enter subnet"; $jobs = 1..254 | ForEach-Object { Test-Connection -ComputerName "$subnet.$_" -Count 1 -AsJob }; $count = 0; $jobs | Wait-Job | Receive-Job | Where-Object { $_.StatusCode -eq 0 } | ForEach-Object { $count++; Write-Host "$count. $($_.Address)" -ForegroundColor Green }; Write-Host "Total active IPs: $count"
