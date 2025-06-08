@@ -30,9 +30,18 @@ Write-Host "|$green                              .                  .           
 |                                                                                |
 |                                                                                |
 |                                                                                |
-|              example: Enter subnet: 192.168.29                                 |
+|              Example: Enter subnet: 192.168.29                                 |
 +--------------------------------------------------------------------------------+
 "@
 
+# Ask user for subnet prefix (e.g., 192.168.29)
+$subnet = Read-Host "Enter subnet (e.g., 192.168.29)"
 
-$subnet = Read-Host "Enter subnet; 1..254 | ForEach-Object { $ip="$subnet.$_"; if ((ping -n 1 -w 200 $ip) -match "bytes=32") { Write-Host "Active: $ip" -ForegroundColor Green } }
+# Loop through 1 to 254 and ping each IP
+1..254 | ForEach-Object {
+    $ip = "$subnet.$_"
+    $result = Test-Connection -ComputerName $ip -Count 1 -Quiet -TimeoutSeconds 1
+    if ($result) {
+        Write-Host "Active: $ip" -ForegroundColor Green
+    }
+}
