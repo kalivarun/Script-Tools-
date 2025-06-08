@@ -1,48 +1,41 @@
-
 import subprocess
 import platform
 import re
 from ipaddress import ip_network
 from concurrent.futures import ThreadPoolExecutor
 
-GREEN = "\033[32m"
-RESET = "\033[0m"
-
-def print_border_logo():
-    print("+" + "-" * 80 + "+")
-    for _ in range(3):
-        print("|" + " " * 80 + "|")
-
-    # Green ASCII art logo
-    logo_lines = [
-        "                                    ..  .:.                                     ",
-        "                                  ':   .oNMK;                                   ",
-        "                                 ,c    .dMMMMd                                  ",
-        "                                .d  .,:lkKNWMMo                                 ",
-        "                                dKo;,'....'cOMM;                                ",
-        "                              .kd.           .lNo                               ",
-        "                              x0               l0                               ",
-        "                              .kk.            cK,.                              ",
-        "                            d0lkNN:         'KOONWNk.                           ",
-        "                          .k0   . ::       .:  . :dkK.                          ",
-        "                         oO..                    .  oK..                        ",
-        "                       cNc    .......''''''''',,,,.  kKK.                       ",
-        "                     .lWd;   ,x,,,'''''..........l,    cNO.                     ",
-        "                   .OMMK;    .l                  :.    'kMl                     ",
-        "                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   ",
-        "                              ,       ,dd'       '   ..,;,.                     ",
-        "                              .                  .                              ",
-    ]
-
-    for line in logo_lines:
-        print("|" + GREEN + line.center(80) + RESET + "|")
-
-    for _ in range(4):
-        print("|" + " " * 80 + "|")
-    print("+" + "-" * 80 + "+")
+def print_logo():
+    logo = r"""
++--------------------------------------------------------------------------------+
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                    ..  .:.                                     |
+|                                  ':   .oNMK;                                   |
+|                                 ,c    .dMMMMd                                  |
+|                                .d  .,:lkKNWMMo                                 |
+|                                dKo;,'....'cOMM;                                |
+|                              .kd.           .lNo                               |
+|                              x0               l0                               |
+|                              .kk.            cK,.                              |
+|                            d0lkNN:         'KOONWNk.                           |
+|                          .k0   . ::       .:  . :dkK.                          |
+|                         oO..                    .  oK..                        |
+|                       cNc    .......''''''''',,,,.  kKK.                       |
+|                     .lWd;   ,x,,,'''''..........l,    cNO.                     |
+|                   .OMMK;    .l                  :.    'kMl                     |
+|                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   |
+|                              ,       ,dd'       '   ..,;,.                     |
+|                              .                  .                              |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
++--------------------------------------------------------------------------------+
+"""
+    print(logo)
 
 def ping_ip(ip):
-    # Use appropriate ping command based on OS
     param = "-n" if platform.system().lower() == "windows" else "-c"
     command = ["ping", param, "1", str(ip)]
     try:
@@ -78,7 +71,7 @@ def scan_subnet(subnet):
 
     print(f"\nScan complete. Found {len(active_devices)} active devices.")
 
-# Example usage
 if __name__ == "__main__":
-    scan_subnet("192.168.1")  # Change to your local subnet base (e.g., "192.168.0" or "10.0.0")
+    print_logo()
+    scan_subnet("192.168.1")  # Change to your subnet (e.g., "192.168.29", "10.0.0", etc.)
 
