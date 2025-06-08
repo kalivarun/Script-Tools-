@@ -1,1 +1,30 @@
- $subnet = Read-Host "Enter subnet (e.g. 192.168.29)"; 1..254 | ForEach-Object { $ip="$subnet.$_"; if ((ping -n 1 -w 200 $ip) -match "bytes=32") { Write-Host "Active: $ip" -ForegroundColor Green } }
+@"
++--------------------------------------------------------------------------------+
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                    ..  .:.                                     |
+|                                  ':   .oNMK;                                   |
+|                                 ,c    .dMMMMd                                  |
+|                                .d  .,:lkKNWMMo                                 |
+|                                dKo;,'....'cOMM;                                |
+|                              .kd.           .lNo                               |
+|                              x0               l0                               |
+|                              .kk.            cK,.                              |
+|                            d0lkNN:         'KOONWNk.                           |
+|                          .k0   . ::       .:  . :dkK.                          |
+|                         oO..                    .  oK..                        |
+|                       cNc    .......''''''''',,,,.  kKK.                       |
+|                     .lWd;   ,x,,,'''''..........l,    cNO.                     |
+|                   .OMMK;    .l                  :.    'kMl                     |
+|                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   |
+|                              ,       ,dd'       '   ..,;,.                     |
+|                              .                  .                              |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
++--------------------------------------------------------------------------------+
+"@
+
+$subnet = Read-Host "Enter subnet (e.g. 192.168.29)"; 1..254 | ForEach-Object { $ip="$subnet.$_"; if ((ping -n 1 -w 200 $ip) -match "bytes=32") { Write-Host "Active: $ip" -ForegroundColor Green } }
