@@ -1,30 +1,38 @@
+$green = "`e[32m"   # ANSI escape code for green
+$reset = "`e[0m"    # Reset color
+
 @"
 +--------------------------------------------------------------------------------+
 |                                                                                |
 |                                                                                |
 |                                                                                |
-|                                    ..  .:.                                     |
-|                                  ':   .oNMK;                                   |
-|                                 ,c    .dMMMMd                                  |
-|                                .d  .,:lkKNWMMo                                 |
-|                                dKo;,'....'cOMM;                                |
-|                              .kd.           .lNo                               |
-|                              x0               l0                               |
-|                              .kk.            cK,.                              |
-|                            d0lkNN:         'KOONWNk.                           |
-|                          .k0   . ::       .:  . :dkK.                          |
-|                         oO..                    .  oK..                        |
-|                       cNc    .......''''''''',,,,.  kKK.                       |
-|                     .lWd;   ,x,,,'''''..........l,    cNO.                     |
-|                   .OMMK;    .l                  :.    'kMl                     |
-|                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   |
-|                              ,       ,dd'       '   ..,;,.                     |
-|                              .                  .                              |
+"@
+
+Write-Host "|$green                                    ..  .:.                                     $reset|"
+Write-Host "|$green                                  ':   .oNMK;                                   $reset|"
+Write-Host "|$green                                 ,c    .dMMMMd                                  $reset|"
+Write-Host "|$green                                .d  .,:lkKNWMMo                                 $reset|"
+Write-Host "|$green                                dKo;,'....'cOMM;                                $reset|"
+Write-Host "|$green                              .kd.           .lNo                               $reset|"
+Write-Host "|$green                              x0               l0                               $reset|"
+Write-Host "|$green                              .kk.            cK,.                              $reset|"
+Write-Host "|$green                            d0lkNN:         'KOONWNk.                           $reset|"
+Write-Host "|$green                          .k0   . ::       .:  . :dkK.                          $reset|"
+Write-Host "|$green                         oO..                    .  oK..                        $reset|"
+Write-Host "|$green                       cNc    .......''''''''',,,,.  kKK.                       $reset|"
+Write-Host "|$green                     .lWd;   ,x,,,'''''..........l,    cNO.                     $reset|"
+Write-Host "|$green                   .OMMK;    .l                  :.    'kMl                     $reset|"
+Write-Host "|$green                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   $reset|"
+Write-Host "|$green                              ,       ,dd'       '   ..,;,.                     $reset|"
+Write-Host "|$green                              .                  .                              $reset|"
+
+@"
 |                                                                                |
 |                                                                                |
 |                                                                                |
-|        (e.g. 192.168.29)"                                                      |
+|              example: Enter subnet: 192.168.29                                 |
 +--------------------------------------------------------------------------------+
 "@
+
 
 $subnet = Read-Host "Enter subnet; 1..254 | ForEach-Object { $ip="$subnet.$_"; if ((ping -n 1 -w 200 $ip) -match "bytes=32") { Write-Host "Active: $ip" -ForegroundColor Green } }
