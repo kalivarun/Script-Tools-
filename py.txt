@@ -1,3 +1,10 @@
+
+import subprocess
+import platform
+import re
+from ipaddress import ip_network
+from concurrent.futures import ThreadPoolExecutor
+
 GREEN = "\033[32m"
 RESET = "\033[0m"
 
@@ -34,17 +41,44 @@ def print_border_logo():
         print("|" + " " * 80 + "|")
     print("+" + "-" * 80 + "+")
 
-def print_scan_results():
-    print("\nScanning...")
-    print(f"{GREEN}Active: 192.168.29.1 - MAC: Interface:{RESET}")
-    print(f"{GREEN}Active: 192.168.29.38 - MAC: 08-00-27-ad-25-87{RESET}")
-    print(f"{GREEN}Active: 192.168.29.45 - MAC: 72-72-d7-1a-af-15{RESET}")
-    print(f"{GREEN}Active: 192.168.29.110 - MAC: Unknown{RESET}")
-    print(f"{GREEN}Active: 192.168.29.117 - MAC: a2-ce-b9-30-8e-c8{RESET}")
-    print("\nScan complete.")
-    print("Total active IPs: 5")
-    print("+" + "-" * 80 + "+")
+def ping_ip(ip):
+    # Use appropriate ping command based on OS
+    param = "-n" if platform.system().lower() == "windows" else "-c"
+    command = ["ping", param, "1", str(ip)]
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        return ip if "TTL=" in result.stdout or "ttl=" in result.stdout else None
+    except FileNotFoundError:
+        return None
 
+def get_mac(ip):
+    try:
+        if platform.system().lower() == "windows":
+            output = subprocess.check_output(["arp", "-a"], text=True)
+        else:
+            output = subprocess.check_output(["arp", "-n", str(ip)], text=True)
+
+        mac_match = re.search(r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}", output)
+        return mac_match.group(0) if mac_match else "Unknown"
+    except:
+        return "Unknown"
+
+def scan_subnet(subnet):
+    print(f"\nScanning subnet {subnet}.0/24...\n")
+    ip_list = list(ip_network(subnet + ".0/24").hosts())
+    active_devices = []
+
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        results = list(executor.map(ping_ip, ip_list))
+
+    for ip in filter(None, results):
+        mac = get_mac(ip)
+        active_devices.append((str(ip), mac))
+        print(f"[+] {ip} - MAC: {mac}")
+
+    print(f"\nScan complete. Found {len(active_devices)} active devices.")
+
+# Example usage
 if __name__ == "__main__":
-    print_border_logo()
-    print_scan_results()
+    scan_subnet("192.168.1")  # Change to your local subnet base (e.g., "192.168.0" or "10.0.0")
+
