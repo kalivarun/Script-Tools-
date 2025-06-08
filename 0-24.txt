@@ -29,4 +29,14 @@
 "@
 
 
-$subnet = Read-Host "Enter subnet; 1..254 | ForEach-Object { $ip="$subnet.$_"; if ((ping -n 1 -w 200 $ip) -match "bytes=32") { Write-Host "Active: $ip" -ForegroundColor Green } }
+# Ask user for subnet (e.g., 192.168.1)
+$subnet = Read-Host "Enter subnet (e.g., 192.168.1)"
+
+# Ping each IP from .1 to .254
+1..254 | ForEach-Object {
+    $ip = "$subnet.$_"
+    if ((ping -n 1 -w 200 $ip) -match "bytes=32") {
+        Write-Host "Active: $ip" -ForegroundColor Green
+    }
+}
+
