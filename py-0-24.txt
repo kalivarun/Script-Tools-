@@ -8,36 +8,44 @@ from concurrent.futures import ThreadPoolExecutor
 
 def print_logo():
     green = "\033[92m"
+    blue = "\033[94m"
     reset = "\033[0m"
-    logo = f"""{green}
-+--------------------------------------------------------------------------------+
-|                                                                                |
-|                                                                                |
-|                                                                                |
-|                                    ..  .:.                                     |
-|                                  ':   .oNMK;                                   |
-|                                 ,c    .dMMMMd                                  |
-|                                .d  .,:lkKNWMMo                                 |
-|                                dKo;,'....'cOMM;                                |
-|                              .kd.           .lNo                               |
-|                              x0               l0                               |
-|                              .kk.            cK,.                              |
-|                            d0lkNN:         'KOONWNk.                           |
-|                          .k0   . ::       .:  . :dkK.                          |
-|                         oO..                    .  oK..                        |
-|                       cNc    .......''''''''',,,,.  kKK.                       |
-|                     .lWd;   ,x,,,'''''..........l,    cNO.                     |
-|                   .OMMK;    .l                  :.    'kMl                     |
-|                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   |
-|                              ,       ,dd'       '   ..,;,.                     |
-|                              .                  .                              |
-|                                                                                |
-|                                                                                |
-|                                                                                |
-|                                                                                |
-+--------------------------------------------------------------------------------+{reset}
-"""
-    print(logo)
+
+    ascii_lines = [
+        "+--------------------------------------------------------------------------------+",
+        "|                                                                                |",
+        "|                                                                                |",
+        "|                                    ..  .:.                                     |",
+        "|                                  ':   .oNMK;                                   |",
+        "|                                 ,c    .dMMMMd                                  |",
+        "|                                .d  .,:lkKNWMMo                                 |",
+        "|                                dKo;,'....'cOMM;                                |",
+        "|                              .kd.           .lNo                               |",
+        "|                              x0               l0                               |",
+        "|                              .kk.            cK,.                              |",
+        "|                            d0lkNN:         'KOONWNk.                           |",
+        "|                          .k0   . ::       .:  . :dkK.                          |",
+        "|                         oO..                    .  oK..                        |",
+        "|                       cNc    .......''''''''',,,,.  kKK.                       |",
+        "|                     .lWd;   ,x,,,'''''..........l,    cNO.                     |",
+        "|                   .OMMK;    .l                  :.    'kMl                     |",
+        "|                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   |",
+        "|                              ,       ,dd'       '   ..,;,.                     |",
+        "|                              .                  .                              |",
+        "|                                                                                |",
+        "|                                                                                |",
+        "|                                                                                |",
+        "|                                                                                |",
+        "+--------------------------------------------------------------------------------+"
+    ]
+
+    for line in ascii_lines:
+        if line.startswith("|") and line.endswith("|"):
+            # Add blue color to content inside the borders only
+            print(f"|{blue}{line[1:-1]}{reset}|")
+        else:
+            print(line)
+
 
 def ping_ip(ip):
     param = "-n" if platform.system().lower() == "windows" else "-c"
