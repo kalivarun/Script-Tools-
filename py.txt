@@ -1,6 +1,7 @@
 import subprocess
 import platform
 import re
+import requests
 from ipaddress import ip_network
 from concurrent.futures import ThreadPoolExecutor
 
@@ -41,7 +42,7 @@ def ping_ip(ip):
     try:
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         return ip if "TTL=" in result.stdout or "ttl=" in result.stdout else None
-    except FileNotFoundError:
+    except:
         return None
 
 def get_mac(ip):
@@ -51,8 +52,18 @@ def get_mac(ip):
         else:
             output = subprocess.check_output(["arp", "-n", str(ip)], text=True)
 
-        mac_match = re.search(r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}", output)
-        return mac_match.group(0) if mac_match else "Unknown"
+        pattern = rf"{ip}\s+([0-9A-Fa-f\-:]{{17}})"
+        match = re.search(pattern, output)
+        return match.group(1) if match else "Unknown"
+    except:
+        return "Unknown"
+
+def get_vendor(mac):
+    try:
+        if mac == "Unknown":
+            return "Unknown"
+        response = requests.get(f"https://api.macvendors.com/{mac}")
+        return response.text if response.status_code == 200 else "Unknown"
     except:
         return "Unknown"
 
@@ -65,13 +76,16 @@ def scan_subnet(subnet):
         results = list(executor.map(ping_ip, ip_list))
 
     for ip in filter(None, results):
-        mac = get_mac(ip)
-        active_devices.append((str(ip), mac))
-        print(f"[+] {ip} - MAC: {mac}")
+        ip_str = str(ip)
+        mac = get_mac(ip_str)
+        vendor = get_vendor(mac)
+        active_devices.append((ip_str, mac, vendor))
+        print(f"[+] {ip_str} - MAC: {mac} - Vendor: {vendor}")
 
     print(f"\nScan complete. Found {len(active_devices)} active devices.")
 
 if __name__ == "__main__":
     print_logo()
-    scan_subnet("192.168.1")  # Change to your subnet (e.g., "192.168.29", "10.0.0", etc.)
+    subnet_input = input("Enter subnet (e.g., 192.168.29): ").strip()
+    scan_subnet(subnet_input)
 
