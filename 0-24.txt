@@ -1,5 +1,4 @@
-
-@"
+$logo = @"
 +--------------------------------------------------------------------------------+
 |                                                                                |
 |                                                                                |
@@ -26,17 +25,4 @@
 |                                                                                |
 |                                                                                |
 +--------------------------------------------------------------------------------+
-"@
-
-
-# Ask user for subnet (e.g., 192.168.1)
-$subnet = Read-Host "Enter subnet (e.g., 192.168.1)"
-
-# Ping each IP from .1 to .254
-1..254 | ForEach-Object {
-    $ip = "$subnet.$_"
-    if ((ping -n 1 -w 200 $ip) -match "bytes=32") {
-        Write-Host "Active: $ip" -ForegroundColor Green
-    }
-}
-
+"@ -split "`n"; foreach ($line in $logo) { Write-Host $line -ForegroundColor Green }; $subnet = Read-Host "Enter subnet (e.g., 192.168.1)"; $jobs = 1..254 | ForEach-Object { Test-Connection -ComputerName "$subnet.$_" -Count 1 -Quiet -AsJob }; $count = 0; $jobs | Wait-Job | Receive-Job | Where-Object { $_ } | ForEach-Object { $count++; Write-Host "$count. $($_.Address)" -ForegroundColor Green }; Write-Host "Total active IPs: $count"
