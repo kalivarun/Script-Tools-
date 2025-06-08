@@ -1,0 +1,42 @@
+# ANSI color codes
+GREEN = "\033[32m"
+RESET = "\033[0m"
+
+# Top border
+print("+" + "-" * 80 + "+")
+
+# Empty lines before image
+for _ in range(3):
+    print("|" + " " * 80 + "|")
+
+# Image block (example lines)
+image_lines = [
+    "                                    ..  .:.                                     ",
+    "                                  ':   .oNMK;                                   ",
+    "                                 ,c    .dMMMMd                                  ",
+    "                                .d  .,:lkKNWMMo                                 ",
+    "                                dKo;,'....'cOMM;                                ",
+    "                              .kd.           .lNo                               ",
+    "                              x0               l0                               ",
+    "                              .kk.            cK,.                              ",
+    "                            d0lkNN:         'KOONWNk.                           ",
+    "                          .k0   . ::       .:  . :dkK.                          ",
+    "                         oO..                    .  oK..                        ",
+    "                       cNc    .......''''''''',,,,.  kKK.                       ",
+    "                     .lWd;   ,x,,,'''''..........l,    cNO.                     ",
+    "                   .OMMK;    .l                  :.    'kMl                     ",
+    "                   c,',cldo,. :       ,dd,       ; ..:cON0lc,                   ",
+    "                              ,       ,dd'       '   ..,;,.                     ",
+    "                              .                  .                              ",
+]
+
+# Print image with green color
+for line in image_lines:
+    print("|" + GREEN + line + RESET + "|")
+
+# Empty lines after image
+for _ in range(4):
+    print("|" + " " * 80 + "|")
+
+# Bottom border
+print("+" + "-" * 80 + "+")
