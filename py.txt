@@ -2,11 +2,14 @@ import subprocess
 import platform
 import re
 import requests
+import sys
 from ipaddress import ip_network
 from concurrent.futures import ThreadPoolExecutor
 
 def print_logo():
-    logo = r"""
+    green = "\033[92m"
+    reset = "\033[0m"
+    logo = f"""{green}
 +--------------------------------------------------------------------------------+
 |                                                                                |
 |                                                                                |
@@ -32,7 +35,7 @@ def print_logo():
 |                                                                                |
 |                                                                                |
 |                                                                                |
-+--------------------------------------------------------------------------------+
++--------------------------------------------------------------------------------+{reset}
 """
     print(logo)
 
@@ -62,7 +65,7 @@ def get_vendor(mac):
     try:
         if mac == "Unknown":
             return "Unknown"
-        response = requests.get(f"https://api.macvendors.com/{mac}")
+        response = requests.get(f"https://api.macvendors.com/{mac}", timeout=3)
         return response.text if response.status_code == 200 else "Unknown"
     except:
         return "Unknown"
@@ -86,6 +89,10 @@ def scan_subnet(subnet):
 
 if __name__ == "__main__":
     print_logo()
-    subnet_input = input("Enter subnet (e.g., 192.168.29): ").strip()
-    scan_subnet(subnet_input)
+    if len(sys.argv) < 2:
+        print("Usage: python script.py <subnet_prefix>")
+        print("Example: python script.py 192.168.29")
+        sys.exit(1)
 
+    subnet_input = sys.argv[1]
+    scan_subnet(subnet_input)
