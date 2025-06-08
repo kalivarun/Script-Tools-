@@ -1,16 +1,1 @@
-$subnet = Read-Host "Enter subnet (e.g. 192.168.29)"
-$jobs = @()
-
-1..254 | ForEach-Object {
-    $ip = "$subnet.$_"
-    $jobs += Start-Job -ScriptBlock {
-        param($ip)
-        if (Test-Connection -Count 1 -Quiet -ComputerName $ip) {
-            Write-Output "Active: $ip"
-        }
-    } -ArgumentList $ip
-}
-
-# Wait and collect results
-$jobs | ForEach-Object { Receive-Job -Job $_ -Wait }
-$jobs | Remove-Job
+ $subnet = Read-Host "Enter subnet (e.g. 192.168.29)"; 1..254 | ForEach-Object { $ip="$subnet.$_"; if ((ping -n 1 -w 200 $ip) -match "bytes=32") { Write-Host "Active: $ip" -ForegroundColor Green } }
