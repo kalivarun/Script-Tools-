@@ -1,0 +1,6 @@
+----------------------------------------------
+To upload a file using python
+--> pip install uploadserver
+--> python -m uploadserver 
+
+----------------------------------------------
