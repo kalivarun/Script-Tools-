@@ -1,0 +1,76 @@
+import requests
+
+def osint_lookup(search_type, search_value):
+    url = "https://osintdog.com/api_proxy.php"
+    headers = {
+        "Content-Type": "application/json",
+        "Referer": "https://osintdog.com/",
+    }
+    data = {"field": [{search_type: search_value}]}
+
+    try:
+        response = requests.post(url, json=data, headers=headers)
+        response.raise_for_status()  # Check for HTTP errors
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
+
+def print_leak_details(leak):
+    print(f"\n🔍 Source: {leak.get('source', {}).get('name', 'Unknown')}")
+    if 'breach_date' in leak.get('source', {}):
+        print(f"📅 Breach Date: {leak['source']['breach_date']}")
+    
+    # Print all available fields
+    for field in leak.get('fields', []):
+        if field in leak:
+            print(f"✅ {field.capitalize()}: {leak[field]}")
+    
+    if 'origin' in leak:
+        print(f"🌐 Origin: {', '.join(leak['origin'])}")
+
+def main():
+    print("OSINT Lookup Tool")
+    print("Choose an option:")
+    print("1. Username")
+    print("2. Phone")
+    print("3. Domain")
+    print("4. IP")
+    print("5. Email")
+
+    choice = input("Enter your choice (1-5): ").strip()
+    search_types = {
+        "1": "username",
+        "2": "phone",
+        "3": "domain",
+        "4": "ip",
+        "5": "email"
+    }
+
+    if choice not in search_types:
+        print("Invalid choice!")
+        return
+
+    search_type = search_types[choice]
+    search_value = input(f"Enter the {search_type}: ").strip()
+
+    print(f"\nSearching for {search_type}: {search_value}...\n")
+    result = osint_lookup(search_type, search_value)
+
+    print("Results:")
+    print("=" * 50)
+    if "error" in result:
+        print(f"❌ Error: {result['error']}")
+    elif "results" in result:
+        leaks = result.get("results", {}).get("leakcheck", {}).get("result", [])
+        if not leaks:
+            print("No leaks found.")
+        else:
+            for leak in leaks:
+                print_leak_details(leak)
+                print("-" * 50)
+    else:
+        print("Unexpected response format.")
+    print("=" * 50)
+
+if __name__ == "__main__":
+    main()
