@@ -1,3 +1,4 @@
+"""
 import requests
 import sys
 
@@ -38,6 +39,90 @@ def main():
     print(f"\nSearching for {search_type}: {search_value}...\n")
     result = osint_lookup(search_type, search_value)
 
+    print("Results:")
+    print("=" * 50)
+    if "error" in result:
+        print(f"❌ Error: {result['error']}")
+    elif "results" in result:
+        leaks = result.get("results", {}).get("leakcheck", {}).get("result", [])
+        if not leaks:
+            print("No leaks found.")
+        else:
+            for leak in leaks:
+                print_leak_details(leak)
+                print("-" * 50)
+    else:
+        print("Unexpected response format.")
+    print("=" * 50)
+
+if __name__ == "__main__":
+    main()
+"""
+
+import requests
+import sys
+
+def osint_lookup(search_type, search_value):
+    url = "https://osintdog.com/api_proxy.php"
+    headers = {
+        "Content-Type": "application/json",
+        "Referer": "https://osintdog.com/",
+    }
+    data = {"field": [{search_type: search_value}]}
+
+    try:
+        response = requests.post(url, json=data, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
+
+def print_leak_details(leak):
+    print(f"\n🔍 Source: {leak.get('source', {}).get('name', 'Unknown')}")
+    if 'breach_date' in leak.get('source', {}):
+        print(f"📅 Breach Date: {leak['source']['breach_date']}")
+    for field in leak.get('fields', []):
+        if field in leak:
+            print(f"✅ {field.capitalize()}: {leak[field]}")
+    if 'origin' in leak:
+        print(f"🌐 Origin: {', '.join(leak['origin'])}")
+
+def show_help():
+    print("OSINT Lookup Tool - Usage:")
+    print("curl -s https://5cript5.vercel.app/osint.txt | python - <type> <value>")
+    print("\nAvailable search types:")
+    print("username <username>    - Search by username")
+    print("email <email>          - Search by email address")
+    print("phone <number>         - Search by phone number")
+    print("ip <ip address>        - Search by IP address")
+    print("domain <domain>        - Search by domain name")
+    print("\nExamples:")
+    print("curl -s https://5cript5.vercel.app/osint.txt | python - email test@example.com")
+    print("curl -s https://5cript5.vercel.app/osint.txt | python - username johndoe")
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1].lower() == "help":
+        show_help()
+        return
+
+    valid_types = ["username", "email", "phone", "ip", "domain"]
+    search_type = sys.argv[1].lower()
+    
+    if search_type not in valid_types:
+        print(f"Error: Invalid search type '{search_type}'")
+        show_help()
+        return
+
+    if len(sys.argv) < 3:
+        print(f"Error: Missing value for {search_type}")
+        show_help()
+        return
+
+    search_value = sys.argv[2]
+    print(f"\nSearching for {search_type}: {search_value}...\n")
+    
+    result = osint_lookup(search_type, search_value)
+    
     print("Results:")
     print("=" * 50)
     if "error" in result:
