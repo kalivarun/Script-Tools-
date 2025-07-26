@@ -1,4 +1,5 @@
 import requests
+import sys
 
 def osint_lookup(search_type, search_value):
     url = "https://osintdog.com/api_proxy.php"
@@ -10,7 +11,7 @@ def osint_lookup(search_type, search_value):
 
     try:
         response = requests.post(url, json=data, headers=headers)
-        response.raise_for_status()  # Check for HTTP errors
+        response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         return {"error": str(e)}
@@ -19,39 +20,20 @@ def print_leak_details(leak):
     print(f"\n🔍 Source: {leak.get('source', {}).get('name', 'Unknown')}")
     if 'breach_date' in leak.get('source', {}):
         print(f"📅 Breach Date: {leak['source']['breach_date']}")
-    
-    # Print all available fields
     for field in leak.get('fields', []):
         if field in leak:
             print(f"✅ {field.capitalize()}: {leak[field]}")
-    
     if 'origin' in leak:
         print(f"🌐 Origin: {', '.join(leak['origin'])}")
 
 def main():
-    print("OSINT Lookup Tool")
-    print("Choose an option:")
-    print("1. Username")
-    print("2. Phone")
-    print("3. Domain")
-    print("4. IP")
-    print("5. Email")
-
-    choice = input("Enter your choice (1-5): ").strip()
-    search_types = {
-        "1": "username",
-        "2": "phone",
-        "3": "domain",
-        "4": "ip",
-        "5": "email"
-    }
-
-    if choice not in search_types:
-        print("Invalid choice!")
+    if len(sys.argv) != 3:
+        print("Usage: python -c \"$(curl -s https://5cript5.vercel.app/osint.txt)\" <type> <value>")
+        print("Example: python -c \"$(curl -s https://5cript5.vercel.app/osint.txt)\" email test@example.com")
         return
 
-    search_type = search_types[choice]
-    search_value = input(f"Enter the {search_type}: ").strip()
+    search_type = sys.argv[1]
+    search_value = sys.argv[2]
 
     print(f"\nSearching for {search_type}: {search_value}...\n")
     result = osint_lookup(search_type, search_value)
