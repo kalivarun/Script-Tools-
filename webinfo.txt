@@ -1,40 +1,41 @@
-# Step 1: Enter the main URL
-$Website = Read-Host "Enter website (e.g., example.com)"
-if (-not $Website.StartsWith("http")) { $Website = "https://$Website" }
+# Function to gather all internal endpoints from a website
+function Get-WebsiteEndpoints {
+    param (
+        [string]$Website
+    )
 
-# Step 2: Fetch the main page
-try {
-    $response = Invoke-WebRequest -Uri $Website -UseBasicParsing -ErrorAction Stop
-} catch {
-    Write-Host "Failed to fetch $Website : $_" -ForegroundColor Red
-    return
-}
+    if (-not $Website) {
+        $Website = Read-Host "Enter website URL (including https://)"
+    }
 
-# Step 3: Gather internal links
-$baseUri = [System.Uri]$Website
-$endpointResults = $response.Links |
-    Where-Object { $_.href -and ($_.href.StartsWith("/") -or $_.href.StartsWith($baseUri.Scheme + "://" + $baseUri.Host)) } |
-    Select-Object -ExpandProperty href -Unique
+    Write-Host "Fetching internal links from: $Website"
+    Write-Host "--------------------------------------------------"
 
-# Convert relative links to full URLs
-$endpointResults = $endpointResults | ForEach-Object {
-    if ($_ -like "/*") { "$($baseUri.Scheme)://$($baseUri.Host)$_" } else { $_ }
-}
-
-# Step 4: Check each endpoint for directory listing
-Write-Host "`nChecking endpoints for directory listing exposure..."
-foreach ($dir in $endpointResults) {
     try {
-        $content = Invoke-WebRequest -Uri $dir -UseBasicParsing -ErrorAction Stop -TimeoutSec 5
-        if ($content.Content -match "Index of" -or
-            $content.Content -match "<title>Index of" -or
-            $content.Content -match "<h1>Index of" -or
-            $content.Content -match "Parent Directory" -or
-            $content.Content -match "<table.*>(.*\bhref\b.*)+</table>") {
-            Write-Host "Directory Listing Found: $dir" -ForegroundColor Green
+        $response = Invoke-WebRequest -Uri $Website -UseBasicParsing -ErrorAction Stop
+        $baseUri = [System.Uri]$Website
+
+        # Extract internal links
+        $links = $response.Links | Where-Object {
+            $_.href -and
+            ($_.href.StartsWith("/") -or $_.href.StartsWith("$($baseUri.Scheme)://$($baseUri.Host)"))
+        } | Select-Object -ExpandProperty href -Unique
+
+        Write-Host "`nDiscovered internal endpoints:"
+        foreach ($link in $links) {
+            if ($link.StartsWith("/")) {
+                $fullLink = "$($baseUri.Scheme)://$($baseUri.Host)$link"
+            } else {
+                $fullLink = $link
+            }
+            Write-Host $fullLink
         }
-    } catch {
-        # Ignore 404/403/etc.
-        continue
+    }
+    catch {
+        Write-Host "Error fetching $Website : $_" -ForegroundColor Red
     }
 }
+
+# Run the function
+Get-WebsiteEndpoints
+
