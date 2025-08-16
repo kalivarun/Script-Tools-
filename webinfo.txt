@@ -1,41 +1,47 @@
-# Function to gather all internal endpoints from a website
-function Get-WebsiteEndpoints {
-    param (
-        [string]$Website
-    )
+# Ask for domain input
+$inputUrl = Read-Host "Enter website URL (with or without https://)"
 
-    if (-not $Website) {
-        $Website = Read-Host "Enter website URL (including https://)"
-    }
-
-    Write-Host "Fetching internal links from: $Website"
-    Write-Host "--------------------------------------------------"
-
-    try {
-        $response = Invoke-WebRequest -Uri $Website -UseBasicParsing -ErrorAction Stop
-        $baseUri = [System.Uri]$Website
-
-        # Extract internal links
-        $links = $response.Links | Where-Object {
-            $_.href -and
-            ($_.href.StartsWith("/") -or $_.href.StartsWith("$($baseUri.Scheme)://$($baseUri.Host)"))
-        } | Select-Object -ExpandProperty href -Unique
-
-        Write-Host "`nDiscovered internal endpoints:"
-        foreach ($link in $links) {
-            if ($link.StartsWith("/")) {
-                $fullLink = "$($baseUri.Scheme)://$($baseUri.Host)$link"
-            } else {
-                $fullLink = $link
-            }
-            Write-Host $fullLink
-        }
-    }
-    catch {
-        Write-Host "Error fetching $Website : $_" -ForegroundColor Red
-    }
+# Add https:// if missing
+if (-not $inputUrl.StartsWith("http")) {
+    $inputUrl = "https://$inputUrl"
 }
 
-# Run the function
-Get-WebsiteEndpoints
+Write-Host "Fetching internal links from: $inputUrl"
+Write-Host "--------------------------------------------------"
 
+try {
+    # Fetch HTML source
+    $response = Invoke-WebRequest -Uri $inputUrl -UseBasicParsing -ErrorAction Stop
+    $baseUri = [System.Uri]$inputUrl
+
+    # Extract hrefs from <a> tags
+    $links = @()
+    foreach ($link in $response.Links) {
+        if ($link.href) {
+            # Make absolute if relative
+            if ($link.href.StartsWith("/")) {
+                $fullLink = "$($baseUri.Scheme)://$($baseUri.Host)$($link.href)"
+            } elseif ($link.href.StartsWith("http")) {
+                $fullLink = $link.href
+            } else {
+                continue
+            }
+
+            # Only include links from the same domain
+            if ($fullLink -like "*$($baseUri.Host)*") {
+                $links += $fullLink
+            }
+        }
+    }
+
+    # Remove duplicates
+    $uniqueLinks = $links | Sort-Object -Unique
+
+    Write-Host "`nDiscovered internal endpoints and directories:"
+    foreach ($l in $uniqueLinks) {
+        Write-Host $l
+    }
+
+} catch {
+    Write-Host "Error fetching website: $_"
+}
