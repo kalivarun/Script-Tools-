@@ -1,42 +1,40 @@
-# Gather unique directories from endpoints
-$allDirs = @()
+# Step 1: Enter the main URL
+$Website = Read-Host "Enter website (e.g., example.com)"
+if (-not $Website.StartsWith("http")) { $Website = "https://$Website" }
 
-foreach ($endpoint in $endpointResults) {
-    try {
-        $uri = [System.Uri]$endpoint
-        $pathSegments = $uri.AbsolutePath.Split('/', [System.StringSplitOptions]::RemoveEmptyEntries)
-
-        $currentPath = ""
-        for ($i = 0; $i -lt $pathSegments.Length; $i++) {
-            $currentPath += "/" + $pathSegments[$i]
-            $allDirs += "$($uri.Scheme)://$($uri.Host)$currentPath/"
-        }
-    }
-    catch { continue }
+# Step 2: Fetch the main page
+try {
+    $response = Invoke-WebRequest -Uri $Website -UseBasicParsing -ErrorAction Stop
+} catch {
+    Write-Host "Failed to fetch $Website : $_" -ForegroundColor Red
+    return
 }
 
-$allDirs = $allDirs | Sort-Object -Unique
+# Step 3: Gather internal links
+$baseUri = [System.Uri]$Website
+$endpointResults = $response.Links |
+    Where-Object { $_.href -and ($_.href.StartsWith("/") -or $_.href.StartsWith($baseUri.Scheme + "://" + $baseUri.Host)) } |
+    Select-Object -ExpandProperty href -Unique
 
-Write-Host "`nChecking directories for listing exposure:"
-Write-Host "--------------------------------------------------"
+# Convert relative links to full URLs
+$endpointResults = $endpointResults | ForEach-Object {
+    if ($_ -like "/*") { "$($baseUri.Scheme)://$($baseUri.Host)$_" } else { $_ }
+}
 
-foreach ($dir in $allDirs) {
+# Step 4: Check each endpoint for directory listing
+Write-Host "`nChecking endpoints for directory listing exposure..."
+foreach ($dir in $endpointResults) {
     try {
-        $endpointResponse = Invoke-WebRequest -Uri $dir -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-        if ($endpointResponse.StatusCode -eq 200) {
-            $content = $endpointResponse.Content
-            if ($content -match "Index of" -or
-                $content -match "<title>Index of" -or
-                $content -match "Parent Directory" -or
-                $content -match "<h1>Index of" -or
-                $content -match "<table.*>(.*\bhref\b.*)+</table>") {
-                
-                Write-Host "Directory Listing Found: $dir" -ForegroundColor Green
-            }
+        $content = Invoke-WebRequest -Uri $dir -UseBasicParsing -ErrorAction Stop -TimeoutSec 5
+        if ($content.Content -match "Index of" -or
+            $content.Content -match "<title>Index of" -or
+            $content.Content -match "<h1>Index of" -or
+            $content.Content -match "Parent Directory" -or
+            $content.Content -match "<table.*>(.*\bhref\b.*)+</table>") {
+            Write-Host "Directory Listing Found: $dir" -ForegroundColor Green
         }
-    }
-    catch {
-        # Skip 404/403/etc.
+    } catch {
+        # Ignore 404/403/etc.
         continue
     }
 }
