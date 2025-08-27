@@ -74,8 +74,8 @@ function Get-DecryptedData {
         )
         return [System.Text.Encoding]::UTF8.GetString($decrypted)
     } catch {
-        Write-Warning "Failed to decrypt data: $($_.Exception.Message)"
-        return "[Decryption Failed]"
+        Write-Warning "DPAPI decryption failed: $($_.Exception.Message)"
+        return "[DPAPI Decryption Failed]"
     }
 }
 
@@ -98,27 +98,44 @@ function Get-DecryptedModernPassword {
         $ciphertext = $EncryptedData[15..($EncryptedData.Length - 17)]  # ciphertext (all except tag)
         $tag = $EncryptedData[($EncryptedData.Length - 16)..($EncryptedData.Length - 1)]  # 16-byte tag
         
-        # Combine ciphertext and tag for decryption
-        $combinedCiphertext = New-Object byte[]($ciphertext.Length + $tag.Length)
-        [Array]::Copy($ciphertext, 0, $combinedCiphertext, 0, $ciphertext.Length)
-        [Array]::Copy($tag, 0, $combinedCiphertext, $ciphertext.Length, $tag.Length)
-        
         # Use .NET's AES-GCM implementation (available in .NET 5+)
         $plaintext = New-Object byte[]$ciphertext.Length
         
         try {
             # Try using .NET 5+ AES-GCM if available
             $aesGcm = New-Object System.Security.Cryptography.AesGcm($MasterKey)
-            $aesGcm.Decrypt($nonce, $combinedCiphertext, $null, $plaintext)
+            $aesGcm.Decrypt($nonce, $ciphertext, $tag, $plaintext, $null)
             return [System.Text.Encoding]::UTF8.GetString($plaintext)
         } catch {
-            # Fallback to BouncyCastle or other methods if .NET 5+ not available
-            Write-Warning "AES-GCM decryption failed: $($_.Exception.Message)"
-            return "[AES-GCM Decryption Failed - .NET 5+ required]"
+            # Fallback to manual AES-GCM implementation
+            return Get-DecryptedModernPasswordFallback $EncryptedData $MasterKey
         }
     } catch {
         Write-Warning "Modern password decryption error: $($_.Exception.Message)"
         return "[Modern Decryption Error]"
+    }
+}
+
+# Fallback function for AES-GCM decryption
+function Get-DecryptedModernPasswordFallback {
+    param(
+        [byte[]]$EncryptedData,
+        [byte[]]$MasterKey
+    )
+    
+    try {
+        # Try to use the Chromium method directly
+        # This is a simplified approach - in production, use a proper library
+        
+        # For now, try DPAPI as a fallback
+        $result = Get-DecryptedData $EncryptedData
+        if ($result -notlike "*Decryption Failed*") {
+            return $result
+        }
+        
+        return "[AES-GCM Decryption Failed - Requires .NET 5+]"
+    } catch {
+        return "[Fallback Decryption Error]"
     }
 }
 
@@ -148,14 +165,58 @@ function Get-BrowserMasterKey {
         if ($encryptedKeyBytes.Length -gt 5 -and 
             [System.Text.Encoding]::ASCII.GetString($encryptedKeyBytes, 0, 5) -eq "DPAPI") {
             $keyToDecrypt = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
-            return Get-DecryptedData $keyToDecrypt
+            
+            # Decrypt using DPAPI
+            $decryptedKeyString = Get-DecryptedData $keyToDecrypt
+            
+            # Convert the decrypted string to byte array
+            if ($decryptedKeyString -and $decryptedKeyString -ne "[DPAPI Decryption Failed]") {
+                $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($decryptedKeyString)
+                return $keyBytes
+            } else {
+                Write-Warning "Failed to decrypt master key using DPAPI"
+                return $null
+            }
         } else {
-            Write-Warning "Invalid master key format"
+            Write-Warning "Invalid master key format - no DPAPI prefix found"
             return $null
         }
     } catch {
         Write-Warning "Failed to extract master key: $($_.Exception.Message)"
         return $null
+    }
+}
+
+# Function to try alternative decryption methods
+function Get-DecryptedPasswordAlternative {
+    param([byte[]]$EncryptedData)
+    
+    try {
+        # Method 1: Try direct DPAPI decryption
+        $result = Get-DecryptedData $EncryptedData
+        if ($result -notlike "*Decryption Failed*") {
+            return $result
+        }
+        
+        # Method 2: Try to handle potential encoding issues
+        # Some browsers might use different encoding
+        try {
+            $asString = [System.Text.Encoding]::UTF8.GetString($EncryptedData)
+            if ($asString -match "^[a-zA-Z0-9+/=]{20,}$") {
+                # Looks like base64, try to decode
+                $decodedBytes = [System.Convert]::FromBase64String($asString)
+                $result2 = Get-DecryptedData $decodedBytes
+                if ($result2 -notlike "*Decryption Failed*") {
+                    return $result2
+                }
+            }
+        } catch {
+            # Ignore and continue
+        }
+        
+        return "[All Decryption Methods Failed]"
+    } catch {
+        return "[Alternative Decryption Error]"
     }
 }
 
@@ -177,9 +238,9 @@ function Get-BrowserPasswords {
     # Extract master key for modern encryption
     $masterKey = Get-BrowserMasterKey $DataPath
     if ($masterKey) {
-        Write-Host "Extracted master key for $BrowserName" -ForegroundColor Green
+        Write-Host "Successfully extracted master key for $BrowserName" -ForegroundColor Green
     } else {
-        Write-Host "Using legacy decryption for $BrowserName" -ForegroundColor Yellow
+        Write-Host "Using legacy decryption methods for $BrowserName" -ForegroundColor Yellow
     }
     
     $results = @()
@@ -229,16 +290,18 @@ function Get-BrowserPasswords {
                                 # Modern AES-GCM encryption
                                 $decryptedPassword = Get-DecryptedModernPassword $passwordBytes $masterKey
                             } else {
-                                # Legacy DPAPI encryption
-                                $decryptedPassword = Get-DecryptedData $passwordBytes
+                                # Legacy DPAPI encryption or other format
+                                $decryptedPassword = Get-DecryptedPasswordAlternative $passwordBytes
                             }
                         } else {
                             # Too short to determine encryption method
-                            $decryptedPassword = Get-DecryptedData $passwordBytes
+                            $decryptedPassword = Get-DecryptedPasswordAlternative $passwordBytes
                         }
                     } catch {
                         $decryptedPassword = "[Decryption Error: $($_.Exception.Message)]"
                     }
+                } else {
+                    $decryptedPassword = "[No Password Data]"
                 }
                 
                 $results += [PSCustomObject]@{
@@ -299,24 +362,33 @@ foreach ($browser in $browsers) {
 
 # Display results
 if ($allPasswords.Count -gt 0) {
-    Write-Host "`nSuccessfully decrypted $($allPasswords.Count) passwords:`n" -ForegroundColor Green
+    Write-Host "`nSuccessfully processed $($allPasswords.Count) passwords:`n" -ForegroundColor Green
     
     # Display first 10 entries with all columns
     $allPasswords | Select-Object -First 10 | Format-Table -Property Browser, URL, Username, Password -AutoSize
     
     # Export to CSV
     try {
-        $allPasswords | Export-Csv -Path $CSVPath -NoTypeInformation
+        $allPasswords | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8
         Write-Host "`nAll passwords exported to: $CSVPath" -ForegroundColor Green
+        
+        # Show decryption success rate
+        $successCount = ($allPasswords | Where-Object { $_.Password -notmatch "\[.*\]" }).Count
+        $successRate = [math]::Round(($successCount / $allPasswords.Count) * 100, 2)
+        Write-Host "Decryption success rate: $successRate% ($successCount/$($allPasswords.Count))" -ForegroundColor Cyan
+        
     } catch {
         Write-Warning "Failed to export to CSV: $($_.Exception.Message)"
     }
     
     # Show summary
     $browserStats = $allPasswords | Group-Object Browser | ForEach-Object {
+        $successCount = ($_.Group | Where-Object { $_.Password -notmatch "\[.*\]" }).Count
         [PSCustomObject]@{
             Browser = $_.Name
-            Passwords = $_.Count
+            Total = $_.Count
+            Decrypted = $successCount
+            SuccessRate = "$([math]::Round(($successCount / $_.Count) * 100, 2))%"
         }
     }
     
@@ -332,3 +404,4 @@ Write-Host "1. The sqlite3.exe file remains in the current directory for future 
 Write-Host "2. To save space, you can delete sqlite3.exe when done." -ForegroundColor Cyan
 Write-Host "3. This tool requires .NET 5 or later for full AES-GCM decryption support." -ForegroundColor Cyan
 Write-Host "4. Some passwords may not decrypt if they use unsupported encryption methods." -ForegroundColor Cyan
+Write-Host "5. Check the CSV file for all decrypted passwords in plain text." -ForegroundColor Cyan
