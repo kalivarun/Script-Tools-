@@ -1,157 +1,71 @@
-# PowerShell script to fetch usernames and passwords from installed browsers
-Write-Host "Fetching usernames and passwords from installed browsers..." -ForegroundColor Green
+# PowerShell 7+ recommended
 
-# Load SQLite assembly (requires System.Data.SQLite NuGet package)
-try {
-    Add-Type -Path "$env:USERPROFILE\.nuget\packages\system.data.sqlite.core\*\lib\netstandard2.0\System.Data.SQLite.dll" -ErrorAction Stop
-} catch {
-    Write-Host "Error: System.Data.SQLite not found. Install it via 'Install-Package System.Data.SQLite -Scope CurrentUser -Force'" -ForegroundColor Red
-    exit
-}
-
-# Define browsers and their user data paths
-$browsers = @{
-    "Google Chrome" = @{
-        DataPath = "$env:LocalAppData\Google\Chrome\User Data"
-        RegistryName = "Google Chrome"
-    }
-    "Brave" = @{
-        DataPath = "$env:LocalAppData\BraveSoftware\Brave-Browser\User Data"
-        RegistryName = "Brave"
-    }
-    "Microsoft Edge" = @{
-        DataPath = "$env:LocalAppData\Microsoft\Edge\User Data"
-        RegistryName = "Microsoft Edge"
-    }
-}
-
-# Initialize counter for total browsers found
-$totalBrowsers = 0
-
-# Function to check if browser is installed via registry
-function Test-BrowserInstalled {
-    param (
-        [string]$regPath,
-        [string]$browserName
+# Function to safely export Chrome/Edge saved passwords
+function Get-SavedPasswords {
+    param(
+        [string]$Browser = "Chrome"  # Can be Chrome or Edge
     )
 
-    if (Test-Path $regPath) {
-        $apps = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
-        foreach ($app in $apps) {
-            if ($app.DisplayName -like "*$browserName*" -and $app.DisplayName -notlike "*WebView*") {
-                return $true
-            }
-        }
+    $userDataPath = switch ($Browser) {
+        "Chrome" { "$env:LOCALAPPDATA\Google\Chrome\User Data\Default" }
+        "Edge"   { "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default" }
+        default  { Write-Host "Unsupported browser"; return }
     }
-    return $false
-}
 
-# Function to decrypt password (Chromium-based browsers use Windows DPAPI)
-function Get-DecryptedPassword {
-    param (
-        [byte[]]$encryptedPassword
-    )
+    $loginData = Join-Path $userDataPath "Login Data"
 
-    try {
-        $decryptedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($encryptedPassword, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-        return [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
-    } catch {
-        return "Failed to decrypt"
-    }
-}
-
-# Function to fetch passwords from a SQLite database
-function Get-PasswordsFromDatabase {
-    param (
-        [string]$dbPath,
-        [string]$browser
-    )
-
-    if (-not (Test-Path $dbPath)) {
-        Write-Host "$browser database not found - $dbPath" -ForegroundColor Red
+    if (-not (Test-Path $loginData)) {
+        Write-Host "No saved passwords found for $Browser"
         return
     }
 
-    try {
-        $conn = New-Object -TypeName System.Data.SQLite.SQLiteConnection -ArgumentList "Data Source=$dbPath;Version=3;"
-        $conn.Open()
+    # Copy the DB to avoid file lock
+    $tempDB = Join-Path $env:TEMP "$Browser-LoginData.db"
+    Copy-Item $loginData $tempDB -Force
 
-        $cmd = $conn.CreateCommand()
-        $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
-        $reader = $cmd.ExecuteReader()
+    # Load SQLite
+    Add-Type -Path "$env:USERPROFILE\.nuget\packages\system.data.sqlite.core\*\lib\netstandard2.0\System.Data.SQLite.dll"
 
-        Write-Host "`nPasswords for $browser" -ForegroundColor Cyan
-        Write-Host "----------------------------------------"
-        $found = $false
-        while ($reader.Read()) {
-            $url = $reader["origin_url"]
-            $username = $reader["username_value"]
-            $encryptedPassword = $reader["password_value"] -as [byte[]]
+    $conn = New-Object System.Data.SQLite.SQLiteConnection "Data Source=$tempDB;Version=3;"
+    $conn.Open()
 
-            if ($username -and $encryptedPassword) {
-                $password = Get-DecryptedPassword -encryptedPassword $encryptedPassword
-                Write-Host "Website: $url"
-                Write-Host "Username: $username"
-                Write-Host "Password: $password"
-                Write-Host "----------------------------------------"
-                $found = $true
-            }
+    $cmd = $conn.CreateCommand()
+    $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
+    $reader = $cmd.ExecuteReader()
+
+    while ($reader.Read()) {
+        $url = $reader["origin_url"]
+        $username = $reader["username_value"]
+        $encryptedPassword = $reader["password_value"] -as [byte[]]
+
+        # Decrypt using Windows DPAPI
+        try {
+            $password = [System.Text.Encoding]::UTF8.GetString(
+                [System.Security.Cryptography.ProtectedData]::Unprotect(
+                    $encryptedPassword, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+                )
+            )
+        } catch {
+            $password = "Could not decrypt"
         }
 
-        if (-not $found) {
-            Write-Host "No passwords found in $dbPath" -ForegroundColor Yellow
+        [PSCustomObject]@{
+            URL      = $url
+            Username = $username
+            Password = $password
         }
-
-        $reader.Close()
-        $conn.Close()
-    } catch {
-        Write-Host "Error accessing $dbPath for $browser - $_" -ForegroundColor Red
     }
+
+    $reader.Close()
+    $conn.Close()
+    Remove-Item $tempDB
 }
 
-# Registry paths for installed programs (32-bit and 64-bit)
-$registryPaths = @(
-    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
-    "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
-)
+# Example usage: fetch Chrome passwords
+$chromePasswords = Get-SavedPasswords -Browser "Chrome"
+$chromePasswords | Format-Table -AutoSize
 
-# Check installed browsers and fetch passwords
-foreach ($browser in $browsers.Keys) {
-    $isInstalled = $false
-    foreach ($path in $registryPaths) {
-        if (Test-BrowserInstalled -regPath $path -browserName $browsers[$browser].RegistryName) {
-            $isInstalled = $true
-            break
-        }
-    }
+# Example usage: fetch Edge passwords
+#$edgePasswords = Get-SavedPasswords -Browser "Edge"
+#$edgePasswords | Format-Table -AutoSize
 
-    if ($isInstalled) {
-        $script:totalBrowsers++
-        Write-Host "`nProcessing $browser..." -ForegroundColor Green
-
-        # Check Default profile
-        $loginDataPath = Join-Path $browsers[$browser].DataPath "Default\Login Data"
-        $loginDataAccountPath = Join-Path $browsers[$browser].DataPath "Default\Login Data For Account"
-
-        Get-PasswordsFromDatabase -dbPath $loginDataPath -browser "$browser (Local)"
-        Get-PasswordsFromDatabase -dbPath $loginDataAccountPath -browser "$browser (Synced)"
-
-        # Check for additional profiles (e.g., Profile 1, Profile 2)
-        $userDataPath = $browsers[$browser].DataPath
-        if (Test-Path $userDataPath) {
-            $profiles = Get-ChildItem -Path $userDataPath -Directory | Where-Object { $_.Name -like "Profile *" }
-            foreach ($profile in $profiles) {
-                $profileLoginDataPath = Join-Path $profile.FullName "Login Data"
-                $profileLoginDataAccountPath = Join-Path $profile.FullName "Login Data For Account"
-                Get-PasswordsFromDatabase -dbPath $profileLoginDataPath -browser "$browser ($($profile.Name) - Local)"
-                Get-PasswordsFromDatabase -dbPath $profileLoginDataAccountPath -browser "$browser ($($profile.Name) - Synced)"
-            }
-        }
-    }
-}
-
-# Final output
-Write-Host "`nTotal browsers with data processed: $totalBrowsers" -ForegroundColor Yellow
-Write-Host "Note: Passwords are decrypted for display only. No data has been saved to disk." -ForegroundColor Yellow
-Write-Host "To access passwords later, use NirSoft ChromePass or restore to a working browser." -ForegroundColor Yellow
