@@ -1,5 +1,12 @@
-# PowerShell script to detect installed browsers (including Brave) and their default paths
-Write-Host "Checking for installed browsers and their paths..." -ForegroundColor Green
+# PowerShell script to detect installed browsers and back up their saved data (user profiles, including passwords)
+Write-Host "Detecting installed browsers and backing up saved data..." -ForegroundColor Green
+
+# Prompt for backup directory
+$backupDir = Read-Host "Enter the backup directory path (e.g., C:\Users\$env:USERNAME\OneDrive\Desktop\BrowserBackup)"
+if (-not (Test-Path $backupDir)) {
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    Write-Host "Created backup directory: $backupDir" -ForegroundColor Yellow
+}
 
 # Define common browsers and their registry display names
 $browsers = @{
@@ -8,7 +15,17 @@ $browsers = @{
     "Microsoft Edge" = "Microsoft Edge"
     "Safari" = "Safari"
     "Opera" = "Opera"
-    "Brave" = "Brave"  # Added Brave
+    "Brave" = "Brave"
+}
+
+# Define user data paths for each browser (where saved data like passwords is stored)
+$userDataPaths = @{
+    "Google Chrome" = "$env:LocalAppData\Google\Chrome\User Data"
+    "Brave" = "$env:LocalAppData\BraveSoftware\Brave-Browser\User Data"
+    "Microsoft Edge" = "$env:LocalAppData\Microsoft\Edge\User Data"
+    "Mozilla Firefox" = "$env:AppData\Mozilla\Firefox\Profiles"
+    "Opera" = "$env:AppData\Opera Software\Opera Stable"
+    "Safari" = "$env:AppData\Apple Computer\Safari"
 }
 
 # Initialize counter for total browsers found
@@ -20,18 +37,15 @@ function Get-InstalledBrowsers {
         [string]$regPath
     )
 
-    # Check if registry path exists
     if (Test-Path $regPath) {
-        # Get all subkeys (installed programs)
         $apps = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
 
         foreach ($app in $apps) {
             $appName = $app.DisplayName
             foreach ($browser in $browsers.Keys) {
-                if ($appName -like "*$($browsers[$browser])*") {
+                if ($appName -like "*$($browsers[$browser])*" -and $appName -notlike "*WebView*") {
                     $installPath = $app.InstallLocation
                     if (-not $installPath) {
-                        # Try to get the path from the UninstallString or other properties
                         if ($app.UninstallString) {
                             $installPath = Split-Path $app.UninstallString -Parent
                         } else {
@@ -43,6 +57,20 @@ function Get-InstalledBrowsers {
                     Write-Host "Install Path: $installPath"
                     Write-Host "----------------------------------------"
                     $script:totalBrowsers++
+
+                    # Back up saved data if user data path exists
+                    $dataPath = $userDataPaths[$browser]
+                    if (Test-Path $dataPath) {
+                        $backupPath = Join-Path $backupDir "$browser"
+                        if (-not (Test-Path $backupPath)) {
+                            New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
+                        }
+                        Write-Host "Backing up saved data for $browser from $dataPath to $backupPath..." -ForegroundColor Green
+                        Copy-Item -Path $dataPath -Destination $backupPath -Recurse -Force
+                        Write-Host "Backup completed for $browser." -ForegroundColor Yellow
+                    } else {
+                        Write-Host "User data path not found for $browser: $dataPath" -ForegroundColor Red
+                    }
                 }
             }
         }
@@ -61,17 +89,17 @@ foreach ($path in $registryPaths) {
     Get-InstalledBrowsers -regPath $path
 }
 
-# Output total number of browsers found
-Write-Host "Total number of browsers found: $totalBrowsers" -ForegroundColor Yellow
+# Output total number of browsers found and backed up
+Write-Host "Total number of browsers detected and backed up: $totalBrowsers" -ForegroundColor Yellow
 
-# Optional: Check common default paths for browsers (including Brave)
+# Optional: Check common default paths for browsers
 $commonPaths = @{
     "Google Chrome" = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
     "Mozilla Firefox" = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"
     "Microsoft Edge" = "$env:ProgramFiles (x86)\Microsoft\Edge\Application\msedge.exe"
     "Safari" = "$env:ProgramFiles\Safari\Safari.exe"
     "Opera" = "$env:ProgramFiles\Opera\opera.exe"
-    "Brave" = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"  # Added Brave default path
+    "Brave" = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
 }
 
 Write-Host "`nChecking common default paths for browsers..." -ForegroundColor Green
@@ -80,13 +108,13 @@ foreach ($browser in $commonPaths.Keys) {
         Write-Host "Browser: $browser" -ForegroundColor Cyan
         Write-Host "Found at default path: $($commonPaths[$browser])"
         Write-Host "----------------------------------------"
-        # Increment counter only if not already found in registry
+        # Check if already counted; if not, increment and back up
         $alreadyFound = $false
         foreach ($path in $registryPaths) {
             if (Test-Path $path) {
                 $apps = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
                 foreach ($app in $apps) {
-                    if ($app.DisplayName -like "*$($browsers[$browser])*") {
+                    if ($app.DisplayName -like "*$($browsers[$browser])*" -and $app.DisplayName -notlike "*WebView*") {
                         $alreadyFound = $true
                         break
                     }
@@ -95,9 +123,22 @@ foreach ($browser in $commonPaths.Keys) {
         }
         if (-not $alreadyFound) {
             $script:totalBrowsers++
+            # Back up if not already done
+            $dataPath = $userDataPaths[$browser]
+            if (Test-Path $dataPath) {
+                $backupPath = Join-Path $backupDir "$browser"
+                if (-not (Test-Path $backupPath)) {
+                    New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
+                }
+                Write-Host "Backing up saved data for $browser from $dataPath to $backupPath..." -ForegroundColor Green
+                Copy-Item -Path $dataPath -Destination $backupPath -Recurse -Force
+                Write-Host "Backup completed for $browser." -ForegroundColor Yellow
+            }
         }
     }
 }
 
 # Final output
-Write-Host "Final count of browsers detected: $totalBrowsers" -ForegroundColor Yellow
+Write-Host "Final count of browsers detected and backed up: $totalBrowsers" -ForegroundColor Yellow
+Write-Host "All saved data (including passwords, bookmarks, etc.) has been backed up to: $backupDir" -ForegroundColor Green
+Write-Host "Note: Passwords are encrypted in the backup. To view them, use a tool like NirSoft ChromePass on a working system." -ForegroundColor Yellow
