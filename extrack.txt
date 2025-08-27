@@ -27,15 +27,21 @@ function Test-BrowserInstalled {
         [string]$browserName
     )
 
-    if (Test-Path $regPath) {
-        $apps = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
-        foreach ($app in $apps) {
-            if ($app.DisplayName -like "*$browserName*" -and $app.DisplayName -notlike "*WebView*") {
-                return $true
+    try {
+        if (Test-Path $regPath) {
+            $apps = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
+            foreach ($app in $apps) {
+                if ($app.DisplayName -like "*$browserName*" -and $app.DisplayName -notlike "*WebView*") {
+                    Write-Host "Found $browserName in registry: $regPath" -ForegroundColor Yellow
+                    return $true
+                }
             }
         }
+        return $false
+    } catch {
+        Write-Host "Error checking registry $regPath : $_" -ForegroundColor Red
+        return $false
     }
-    return $false
 }
 
 # Function to run ChromePass and fetch passwords
@@ -52,7 +58,8 @@ function Get-PasswordsFromDatabase {
     }
 
     try {
-        # Run ChromePass with command-line options to extract passwords
+        Write-Host "Running ChromePass for $browser on $dbPath" -ForegroundColor Yellow
+        # Run ChromePass with command-line options to extract passwords in CSV format
         $output = & $chromePassPath /scomma /external $dbPath
         Write-Host "`nPasswords for $browser" -ForegroundColor Cyan
         Write-Host "----------------------------------------"
@@ -83,23 +90,12 @@ function Get-PasswordsFromDatabase {
     }
 }
 
-# Create a temporary directory for ChromePass
-$tempDir = "$env:TEMP\ChromePassTemp"
-if (-not (Test-Path $tempDir)) {
-    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-}
-
-# Base64-encoded ChromePass executable (placeholder)
-# Replace <BASE64_STRING> with the actual base64 string of ChromePass.exe
-$chromePassBase64 = "<BASE64_STRING>"
-$chromePassPath = "$tempDir\ChromePass.exe"
-
-# Decode and save ChromePass executable
-try {
-    $bytes = [System.Convert]::FromBase64String($chromePassBase64)
-    [System.IO.File]::WriteAllBytes($chromePassPath, $bytes)
-} catch {
-    Write-Host "Error: Failed to create ChromePass executable. Please provide a valid base64 string or place ChromePass.exe in $tempDir" -ForegroundColor Red
+# Verify ChromePass.exe exists
+$chromePassPath = "$PSScriptRoot\ChromePass.exe"
+if (-not (Test-Path $chromePassPath)) {
+    Write-Host "Error: ChromePass.exe not found in $PSScriptRoot. Please download from https://www.nirsoft.net/utils/chromepass.html and place in $PSScriptRoot" -ForegroundColor Red
+    Write-Host "Press Enter to exit..." -ForegroundColor Yellow
+    Read-Host
     exit
 }
 
@@ -142,18 +138,16 @@ foreach ($browser in $browsers.Keys) {
                 Get-PasswordsFromDatabase -dbPath $profileLoginDataAccountPath -browser "$browser ($($profile.Name) - Synced)" -chromePassPath $chromePassPath
             }
         }
+    } else {
+        Write-Host "Browser $browser not found in registry" -ForegroundColor Red
     }
-}
-
-# Clean up temporary ChromePass executable
-if (Test-Path $chromePassPath) {
-    Remove-Item -Path $chromePassPath -Force
-}
-if (Test-Path $tempDir) {
-    Remove-Item -Path $tempDir -Recurse -Force
 }
 
 # Final output
 Write-Host "`nTotal browsers with data processed: $totalBrowsers" -ForegroundColor Yellow
 Write-Host "Note: Passwords are decrypted for display only. No data has been saved to disk." -ForegroundColor Yellow
 Write-Host "To access passwords later, use NirSoft ChromePass or restore to a working browser." -ForegroundColor Yellow
+
+# Pause to keep console open
+Write-Host "Press Enter to exit..." -ForegroundColor Yellow
+Read-Host
