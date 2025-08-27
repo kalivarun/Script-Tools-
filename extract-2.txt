@@ -1,0 +1,46 @@
+# NirSoft ChromePass Automated Download and Execution
+Write-Host "Downloading and running NirSoft ChromePass..." -ForegroundColor Green
+
+$tempDir = "$env:TEMP\BrowserPasswordRecovery"
+$chromePassUrl = "https://www.nirsoft.net/toolsdownload/chromepass.zip"
+$chromePassExe = "ChromePass.exe"
+$outputFile = ".\RecoveredPasswords.csv"
+
+# Create temporary directory
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+try {
+    # Download ChromePass
+    Write-Host "Downloading ChromePass..." -ForegroundColor Yellow
+    $zipPath = "$tempDir\chromepass.zip"
+    Invoke-WebRequest -Uri $chromePassUrl -OutFile $zipPath -UseBasicParsing
+    
+    # Extract and run
+    Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
+    
+    if (Test-Path "$tempDir\$chromePassExe") {
+        Write-Host "Running ChromePass to extract passwords..." -ForegroundColor Green
+        
+        # Run ChromePass and save to CSV
+        & "$tempDir\$chromePassExe" /scomma "$outputFile"
+        
+        if (Test-Path $outputFile) {
+            $passwordCount = (Import-Csv $outputFile | Measure-Object).Count
+            Write-Host "Successfully recovered $passwordCount passwords!" -ForegroundColor Green
+            Write-Host "Saved to: $outputFile" -ForegroundColor Green
+            
+            # Show first few entries
+            $results = Import-Csv $outputFile | Select-Object -First 5
+            $results | Format-Table -AutoSize
+        } else {
+            Write-Host "No passwords were recovered." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "ChromePass executable not found." -ForegroundColor Red
+    }
+} catch {
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+} finally {
+    # Cleanup
+    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
