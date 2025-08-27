@@ -1,46 +1,105 @@
-# NirSoft ChromePass Automated Download and Execution
-Write-Host "Downloading and running NirSoft ChromePass..." -ForegroundColor Green
+# All-in-One Browser Password Recovery Script
+param(
+    [string]$Tool = "NirSoft",  # Options: NirSoft, LaZagne, BrowserPasswordDump
+    [string]$OutputFile = ".\Recovered_Passwords.csv"
+)
 
-$tempDir = "$env:TEMP\BrowserPasswordRecovery"
-$chromePassUrl = "https://www.nirsoft.net/toolsdownload/chromepass.zip"
-$chromePassExe = "ChromePass.exe"
-$outputFile = ".\RecoveredPasswords.csv"
+Write-Host "Browser Password Recovery Tool" -ForegroundColor Green
+Write-Host "==============================" -ForegroundColor Green
 
-# Create temporary directory
-New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-
-try {
-    # Download ChromePass
-    Write-Host "Downloading ChromePass..." -ForegroundColor Yellow
-    $zipPath = "$tempDir\chromepass.zip"
-    Invoke-WebRequest -Uri $chromePassUrl -OutFile $zipPath -UseBasicParsing
+function Use-NirSoft {
+    $tempDir = "$env:TEMP\NirSoftRecovery"
+    $chromePassUrl = "https://www.nirsoft.net/toolsdownload/chromepass.zip"
     
-    # Extract and run
-    Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     
-    if (Test-Path "$tempDir\$chromePassExe") {
-        Write-Host "Running ChromePass to extract passwords..." -ForegroundColor Green
+    try {
+        Write-Host "Downloading NirSoft ChromePass..." -ForegroundColor Yellow
+        $zipPath = "$tempDir\chromepass.zip"
+        Invoke-WebRequest -Uri $chromePassUrl -OutFile $zipPath -UseBasicParsing
+        Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
         
-        # Run ChromePass and save to CSV
-        & "$tempDir\$chromePassExe" /scomma "$outputFile"
-        
-        if (Test-Path $outputFile) {
-            $passwordCount = (Import-Csv $outputFile | Measure-Object).Count
-            Write-Host "Successfully recovered $passwordCount passwords!" -ForegroundColor Green
-            Write-Host "Saved to: $outputFile" -ForegroundColor Green
-            
-            # Show first few entries
-            $results = Import-Csv $outputFile | Select-Object -First 5
-            $results | Format-Table -AutoSize
-        } else {
-            Write-Host "No passwords were recovered." -ForegroundColor Yellow
+        if (Test-Path "$tempDir\ChromePass.exe") {
+            & "$tempDir\ChromePass.exe" /scomma $OutputFile
+            return $true
         }
-    } else {
-        Write-Host "ChromePass executable not found." -ForegroundColor Red
+        return $false
+    } catch {
+        Write-Host "NirSoft method failed: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    } finally {
+        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
-} catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-} finally {
-    # Cleanup
-    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+function Use-LaZagne {
+    $tempDir = "$env:TEMP\LaZagneRecovery"
+    $lazagneUrl = "https://github.com/AlessandroZ/LaZagne/releases/download/2.4.3/LaZagne.exe"
+    
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    
+    try {
+        Write-Host "Downloading LaZagne..." -ForegroundColor Yellow
+        $exePath = "$tempDir\LaZagne.exe"
+        Invoke-WebRequest -Uri $lazagneUrl -OutFile $exePath -UseBasicParsing
+        
+        & $exePath browsers -oJ -output "$(Get-Location)" | Out-Null
+        
+        if (Test-Path ".\browsers_password.json") {
+            $jsonData = Get-Content ".\browsers_password.json" -Raw | ConvertFrom-Json
+            $csvData = @()
+            
+            foreach ($browser in $jsonData.PSObject.Properties) {
+                foreach ($entry in $browser.Value) {
+                    $csvData += [PSCustomObject]@{
+                        Browser = $browser.Name
+                        URL = $entry.url
+                        Username = $entry.login
+                        Password = $entry.password
+                    }
+                }
+            }
+            
+            $csvData | Export-Csv $OutputFile -NoTypeInformation
+            Remove-Item ".\browsers_password.json" -Force
+            return $true
+        }
+        return $false
+    } catch {
+        Write-Host "LaZagne method failed: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    } finally {
+        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Main execution
+$success = $false
+
+switch ($Tool.ToLower()) {
+    "nirsoft" { $success = Use-NirSoft }
+    "lazagne" { $success = Use-LaZagne }
+    default { 
+        Write-Host "Trying NirSoft first..." -ForegroundColor Yellow
+        $success = Use-NirSoft
+        if (-not $success) {
+            Write-Host "Trying LaZagne as fallback..." -ForegroundColor Yellow
+            $success = Use-LaZagne
+        }
+    }
+}
+
+if ($success -and (Test-Path $OutputFile)) {
+    $results = Import-Csv $OutputFile
+    $count = ($results | Measure-Object).Count
+    
+    Write-Host "`nSuccessfully recovered $count passwords!" -ForegroundColor Green
+    Write-Host "Saved to: $OutputFile" -ForegroundColor Green
+    
+    # Display sample
+    $results | Select-Object -First 5 | Format-Table -AutoSize
+} else {
+    Write-Host "Password recovery failed. Try running as Administrator." -ForegroundColor Red
+}
+
+Write-Host "`nProcess completed." -ForegroundColor Green
