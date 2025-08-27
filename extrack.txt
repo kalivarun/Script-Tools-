@@ -1,0 +1,103 @@
+# PowerShell script to detect installed browsers (including Brave) and their default paths
+Write-Host "Checking for installed browsers and their paths..." -ForegroundColor Green
+
+# Define common browsers and their registry display names
+$browsers = @{
+    "Google Chrome" = "Google Chrome"
+    "Mozilla Firefox" = "Firefox"
+    "Microsoft Edge" = "Microsoft Edge"
+    "Safari" = "Safari"
+    "Opera" = "Opera"
+    "Brave" = "Brave"  # Added Brave
+}
+
+# Initialize counter for total browsers found
+$totalBrowsers = 0
+
+# Function to check registry for installed programs
+function Get-InstalledBrowsers {
+    param (
+        [string]$regPath
+    )
+
+    # Check if registry path exists
+    if (Test-Path $regPath) {
+        # Get all subkeys (installed programs)
+        $apps = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
+
+        foreach ($app in $apps) {
+            $appName = $app.DisplayName
+            foreach ($browser in $browsers.Keys) {
+                if ($appName -like "*$($browsers[$browser])*") {
+                    $installPath = $app.InstallLocation
+                    if (-not $installPath) {
+                        # Try to get the path from the UninstallString or other properties
+                        if ($app.UninstallString) {
+                            $installPath = Split-Path $app.UninstallString -Parent
+                        } else {
+                            $installPath = "Path not found"
+                        }
+                    }
+                    Write-Host "Browser: $browser" -ForegroundColor Cyan
+                    Write-Host "Display Name: $appName"
+                    Write-Host "Install Path: $installPath"
+                    Write-Host "----------------------------------------"
+                    $script:totalBrowsers++
+                }
+            }
+        }
+    }
+}
+
+# Registry paths for installed programs (32-bit and 64-bit)
+$registryPaths = @(
+    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+)
+
+# Loop through registry paths
+foreach ($path in $registryPaths) {
+    Get-InstalledBrowsers -regPath $path
+}
+
+# Output total number of browsers found
+Write-Host "Total number of browsers found: $totalBrowsers" -ForegroundColor Yellow
+
+# Optional: Check common default paths for browsers (including Brave)
+$commonPaths = @{
+    "Google Chrome" = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+    "Mozilla Firefox" = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"
+    "Microsoft Edge" = "$env:ProgramFiles (x86)\Microsoft\Edge\Application\msedge.exe"
+    "Safari" = "$env:ProgramFiles\Safari\Safari.exe"
+    "Opera" = "$env:ProgramFiles\Opera\opera.exe"
+    "Brave" = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"  # Added Brave default path
+}
+
+Write-Host "`nChecking common default paths for browsers..." -ForegroundColor Green
+foreach ($browser in $commonPaths.Keys) {
+    if (Test-Path $commonPaths[$browser]) {
+        Write-Host "Browser: $browser" -ForegroundColor Cyan
+        Write-Host "Found at default path: $($commonPaths[$browser])"
+        Write-Host "----------------------------------------"
+        # Increment counter only if not already found in registry
+        $alreadyFound = $false
+        foreach ($path in $registryPaths) {
+            if (Test-Path $path) {
+                $apps = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+                foreach ($app in $apps) {
+                    if ($app.DisplayName -like "*$($browsers[$browser])*") {
+                        $alreadyFound = $true
+                        break
+                    }
+                }
+            }
+        }
+        if (-not $alreadyFound) {
+            $script:totalBrowsers++
+        }
+    }
+}
+
+# Final output
+Write-Host "Final count of browsers detected: $totalBrowsers" -ForegroundColor Yellow
