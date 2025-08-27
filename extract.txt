@@ -1,58 +1,37 @@
-# Browser Password Extraction using Chrome's Native Messaging
-# This method works for Chrome-based browsers
+# Download and use NirSoft's BrowserPassView (most reliable method)
+Write-Host "Downloading NirSoft BrowserPassView..." -ForegroundColor Yellow
 
-# Check if Chrome is installed
-$chromePath = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-if (Test-Path $chromePath) {
-    Write-Host "Chrome found. Attempting to extract passwords..." -ForegroundColor Green
+$downloadUrl = "https://www.nirsoft.net/toolsdownload/browserpassview.zip"
+$zipPath = ".\browserpassview.zip"
+$extractPath = ".\browserpassview"
+
+try {
+    # Download BrowserPassView
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
     
-    # Create a temporary extension to extract passwords
-    $manifest = @"
-{
-    "name": "Password Exporter",
-    "version": "1.0",
-    "description": "Exports saved passwords",
-    "permissions": ["passwords"],
-    "background": {
-        "service_worker": "background.js"
-    },
-    "manifest_version": 3
-}
-"@
-
-    $backgroundScript = @"
-chrome.runtime.onInstalled.addListener(() => {
-    chrome.passwordsPrivate.getSavedPasswordList(passwords => {
-        let csvContent = "URL,Username,Password\\n";
+    # Extract
+    Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+    
+    # Run BrowserPassView
+    $toolPath = Join-Path $extractPath "browserpassview.exe"
+    
+    if (Test-Path $toolPath) {
+        Write-Host "Running BrowserPassView..." -ForegroundColor Green
+        Write-Host "This will show all browser passwords in a clear interface." -ForegroundColor Green
         
-        passwords.forEach(password => {
-            csvContent += `"${password.url}","${password.username}","${password.password}"\\n`;
-        });
+        # Run the tool
+        Start-Process $toolPath -Wait
         
-        // Create download
-        const blob = new Blob([csvContent], { type: 'text/csv' });
-        const url = URL.createObjectURL(blob);
-        chrome.downloads.download({
-            url: url,
-            filename: 'chrome_passwords.csv',
-            saveAs: true
-        });
-    });
-});
-"@
-
-    # Create temporary extension directory
-    $tempDir = ".\chrome_temp_extension"
-    New-Item -ItemType Directory -Path $tempDir -Force
-    $manifest | Out-File "$tempDir\manifest.json" -Encoding UTF8
-    $backgroundScript | Out-File "$tempDir\background.js" -Encoding UTF8
-
-    Write-Host "Temporary extension created. Please manually load it in Chrome:" -ForegroundColor Yellow
-    Write-Host "1. Open Chrome and go to: chrome://extensions/" -ForegroundColor Yellow
-    Write-Host "2. Enable 'Developer mode'" -ForegroundColor Yellow
-    Write-Host "3. Click 'Load unpacked' and select: $tempDir" -ForegroundColor Yellow
-    Write-Host "4. The extension will automatically export passwords to a CSV file" -ForegroundColor Yellow
+        Write-Host "`nYou can also export passwords to CSV using the File > Save All Items menu." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Failed to find BrowserPassView executable." -ForegroundColor Red
+    }
+    
+    # Cleanup
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 }
-else {
-    Write-Host "Chrome not found." -ForegroundColor Red
+catch {
+    Write-Host "Failed to download BrowserPassView: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "You can manually download it from: https://www.nirsoft.net/utils/browser_password.html" -ForegroundColor Yellow
 }
