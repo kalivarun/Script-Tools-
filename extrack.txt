@@ -1,83 +1,111 @@
-# PowerShell script to detect installed browsers and back up their saved data (user profiles, including passwords)
-Write-Host "Detecting installed browsers and backing up saved data..." -ForegroundColor Green
+# PowerShell script to fetch usernames and passwords from installed browsers
+Write-Host "Fetching usernames and passwords from installed browsers..." -ForegroundColor Green
 
-# Prompt for backup directory
-$backupDir = Read-Host "Enter the backup directory path (e.g., C:\Users\$env:USERNAME\OneDrive\Desktop\BrowserBackup)"
-if (-not (Test-Path $backupDir)) {
-    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-    Write-Host "Created backup directory $backupDir" -ForegroundColor Yellow
+# Load SQLite assembly (requires System.Data.SQLite NuGet package)
+try {
+    Add-Type -Path "$env:USERPROFILE\.nuget\packages\system.data.sqlite.core\*\lib\netstandard2.0\System.Data.SQLite.dll" -ErrorAction Stop
+} catch {
+    Write-Host "Error: System.Data.SQLite not found. Install it via 'Install-Package System.Data.SQLite -Scope CurrentUser -Force'" -ForegroundColor Red
+    exit
 }
 
-# Define common browsers and their registry display names
+# Define browsers and their user data paths
 $browsers = @{
-    "Google Chrome" = "Google Chrome"
-    "Mozilla Firefox" = "Firefox"
-    "Microsoft Edge" = "Microsoft Edge"
-    "Safari" = "Safari"
-    "Opera" = "Opera"
-    "Brave" = "Brave"
-}
-
-# Define user data paths for each browser (where saved data like passwords is stored)
-$userDataPaths = @{
-    "Google Chrome" = "$env:LocalAppData\Google\Chrome\User Data"
-    "Brave" = "$env:LocalAppData\BraveSoftware\Brave-Browser\User Data"
-    "Microsoft Edge" = "$env:LocalAppData\Microsoft\Edge\User Data"
-    "Mozilla Firefox" = "$env:AppData\Mozilla\Firefox\Profiles"
-    "Opera" = "$env:AppData\Opera Software\Opera Stable"
-    "Safari" = "$env:AppData\Apple Computer\Safari"
+    "Google Chrome" = @{
+        DataPath = "$env:LocalAppData\Google\Chrome\User Data"
+        RegistryName = "Google Chrome"
+    }
+    "Brave" = @{
+        DataPath = "$env:LocalAppData\BraveSoftware\Brave-Browser\User Data"
+        RegistryName = "Brave"
+    }
+    "Microsoft Edge" = @{
+        DataPath = "$env:LocalAppData\Microsoft\Edge\User Data"
+        RegistryName = "Microsoft Edge"
+    }
 }
 
 # Initialize counter for total browsers found
 $totalBrowsers = 0
 
-# Function to check registry for installed programs
-function Get-InstalledBrowsers {
+# Function to check if browser is installed via registry
+function Test-BrowserInstalled {
     param (
-        [string]$regPath
+        [string]$regPath,
+        [string]$browserName
     )
 
     if (Test-Path $regPath) {
         $apps = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
-
         foreach ($app in $apps) {
-            $appName = $app.DisplayName
-            foreach ($browser in $browsers.Keys) {
-                if ($appName -like "*$($browsers[$browser])*" -and $appName -notlike "*WebView*") {
-                    $installPath = $app.InstallLocation
-                    if (-not $installPath) {
-                        if ($app.UninstallString) {
-                            $installPath = Split-Path $app.UninstallString -Parent
-                        } else {
-                            $installPath = "Path not found"
-                        }
-                    }
-                    Write-Host "Browser: $browser" -ForegroundColor Cyan
-                    Write-Host "Display Name: $appName"
-                    Write-Host "Install Path: $installPath"
-                    Write-Host "----------------------------------------"
-                    $script:totalBrowsers++
-
-                    # Back up saved data if user data path exists
-                    $dataPath = $userDataPaths[$browser]
-                    if (Test-Path $dataPath) {
-                        $backupPath = Join-Path $backupDir "$browser"
-                        if (-not (Test-Path $backupPath)) {
-                            New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
-                        }
-                        Write-Host "Backing up saved data for $browser from $dataPath to $backupPath" -ForegroundColor Green
-                        try {
-                            Copy-Item -Path $dataPath -Destination $backupPath -Recurse -Force -ErrorAction Stop
-                            Write-Host "Backup completed for $browser" -ForegroundColor Yellow
-                        } catch {
-                            Write-Host "Error backing up $browser data: $_" -ForegroundColor Red
-                        }
-                    } else {
-                        Write-Host "User data path not found for $browser - $dataPath" -ForegroundColor Red
-                    }
-                }
+            if ($app.DisplayName -like "*$browserName*" -and $app.DisplayName -notlike "*WebView*") {
+                return $true
             }
         }
+    }
+    return $false
+}
+
+# Function to decrypt password (Chromium-based browsers use Windows DPAPI)
+function Get-DecryptedPassword {
+    param (
+        [byte[]]$encryptedPassword
+    )
+
+    try {
+        $decryptedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($encryptedPassword, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
+    } catch {
+        return "Failed to decrypt"
+    }
+}
+
+# Function to fetch passwords from a SQLite database
+function Get-PasswordsFromDatabase {
+    param (
+        [string]$dbPath,
+        [string]$browser
+    )
+
+    if (-not (Test-Path $dbPath)) {
+        Write-Host "$browser database not found: $dbPath" -ForegroundColor Red
+        return
+    }
+
+    try {
+        $conn = New-Object -TypeName System.Data.SQLite.SQLiteConnection -ArgumentList "Data Source=$dbPath;Version=3;"
+        $conn.Open()
+
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
+        $reader = $cmd.ExecuteReader()
+
+        Write-Host "`nPasswords for $browser:" -ForegroundColor Cyan
+        Write-Host "----------------------------------------"
+        $found = $false
+        while ($reader.Read()) {
+            $url = $reader["origin_url"]
+            $username = $reader["username_value"]
+            $encryptedPassword = $reader["password_value"] -as [byte[]]
+
+            if ($username -and $encryptedPassword) {
+                $password = Get-DecryptedPassword -encryptedPassword $encryptedPassword
+                Write-Host "Website: $url"
+                Write-Host "Username: $username"
+                Write-Host "Password: $password"
+                Write-Host "----------------------------------------"
+                $found = $true
+            }
+        }
+
+        if (-not $found) {
+            Write-Host "No passwords found in $dbPath" -ForegroundColor Yellow
+        }
+
+        $reader.Close()
+        $conn.Close()
+    } catch {
+        Write-Host "Error accessing $dbPath for $browser : $_" -ForegroundColor Red
     }
 }
 
@@ -88,64 +116,42 @@ $registryPaths = @(
     "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
 )
 
-# Loop through registry paths
-foreach ($path in $registryPaths) {
-    Get-InstalledBrowsers -regPath $path
-}
-
-# Output total number of browsers found
-Write-Host "Total number of browsers found: $totalBrowsers" -ForegroundColor Yellow
-
-# Check common default paths for browsers (in case registry misses them)
-$commonPaths = @{
-    "Google Chrome" = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
-    "Mozilla Firefox" = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"
-    "Microsoft Edge" = "$env:ProgramFiles (x86)\Microsoft\Edge\Application\msedge.exe"
-    "Safari" = "$env:ProgramFiles\Safari\Safari.exe"
-    "Opera" = "$env:ProgramFiles\Opera\opera.exe"
-    "Brave" = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
-}
-
-Write-Host "`nChecking common default paths for browsers..." -ForegroundColor Green
-foreach ($browser in $commonPaths.Keys) {
-    if (Test-Path $commonPaths[$browser]) {
-        Write-Host "Browser: $browser" -ForegroundColor Cyan
-        Write-Host "Found at default path: $($commonPaths[$browser])"
-        Write-Host "----------------------------------------"
-        # Check if already counted; if not, increment and back up
-        $alreadyFound = $false
-        foreach ($path in $registryPaths) {
-            if (Test-Path $path) {
-                $apps = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
-                foreach ($app in $apps) {
-                    if ($app.DisplayName -like "*$($browsers[$browser])*" -and $app.DisplayName -notlike "*WebView*") {
-                        $alreadyFound = $true
-                        break
-                    }
-                }
-            }
+# Check installed browsers and fetch passwords
+foreach ($browser in $browsers.Keys) {
+    $isInstalled = $false
+    foreach ($path in $registryPaths) {
+        if (Test-BrowserInstalled -regPath $path -browserName $browsers[$browser].RegistryName) {
+            $isInstalled = $true
+            break
         }
-        if (-not $alreadyFound) {
-            $script:totalBrowsers++
-            $dataPath = $userDataPaths[$browser]
-            if (Test-Path $dataPath) {
-                $backupPath = Join-Path $backupDir "$browser"
-                if (-not (Test-Path $backupPath)) {
-                    New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
-                }
-                Write-Host "Backing up saved data for $browser from $dataPath to $backupPath" -ForegroundColor Green
-                try {
-                    Copy-Item -Path $dataPath -Destination $backupPath -Recurse -Force -ErrorAction Stop
-                    Write-Host "Backup completed for $browser" -ForegroundColor Yellow
-                } catch {
-                    Write-Host "Error backing up $browser data: $_" -ForegroundColor Red
-                }
+    }
+
+    if ($isInstalled) {
+        $script:totalBrowsers++
+        Write-Host "`nProcessing $browser..." -ForegroundColor Green
+
+        # Check Default profile
+        $loginDataPath = Join-Path $browsers[$browser].DataPath "Default\Login Data"
+        $loginDataAccountPath = Join-Path $browsers[$browser].DataPath "Default\Login Data For Account"
+
+        Get-PasswordsFromDatabase -dbPath $loginDataPath -browser "$browser (Local)"
+        Get-PasswordsFromDatabase -dbPath $loginDataAccountPath -browser "$browser (Synced)"
+
+        # Check for additional profiles (e.g., Profile 1, Profile 2)
+        $userDataPath = $browsers[$browser].DataPath
+        if (Test-Path $userDataPath) {
+            $profiles = Get-ChildItem -Path $userDataPath -Directory | Where-Object { $_.Name -like "Profile *" }
+            foreach ($profile in $profiles) {
+                $profileLoginDataPath = Join-Path $profile.FullName "Login Data"
+                $profileLoginDataAccountPath = Join-Path $profile.FullName "Login Data For Account"
+                Get-PasswordsFromDatabase -dbPath $profileLoginDataPath -browser "$browser ($($profile.Name) - Local)"
+                Get-PasswordsFromDatabase -dbPath $profileLoginDataAccountPath -browser "$browser ($($profile.Name) - Synced)"
             }
         }
     }
 }
 
 # Final output
-Write-Host "Final count of browsers detected and backed up: $totalBrowsers" -ForegroundColor Yellow
-Write-Host "All saved data (including passwords, bookmarks, etc.) has been backed up to: $backupDir" -ForegroundColor Green
-Write-Host "Note: Passwords are encrypted. To view them, restore to a working browser or use NirSoft ChromePass on a Windows system." -ForegroundColor Yellow
+Write-Host "`nTotal browsers with data processed: $totalBrowsers" -ForegroundColor Yellow
+Write-Host "Note: Passwords are decrypted for display only. No data has been saved to disk." -ForegroundColor Yellow
+Write-Host "To access passwords later, use NirSoft ChromePass or restore to a working browser." -ForegroundColor Yellow
