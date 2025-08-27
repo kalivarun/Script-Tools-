@@ -5,7 +5,7 @@ Write-Host "Detecting installed browsers and backing up saved data..." -Foregrou
 $backupDir = Read-Host "Enter the backup directory path (e.g., C:\Users\$env:USERNAME\OneDrive\Desktop\BrowserBackup)"
 if (-not (Test-Path $backupDir)) {
     New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-    Write-Host "Created backup directory: $backupDir" -ForegroundColor Yellow
+    Write-Host "Created backup directory $backupDir" -ForegroundColor Yellow
 }
 
 # Define common browsers and their registry display names
@@ -65,11 +65,15 @@ function Get-InstalledBrowsers {
                         if (-not (Test-Path $backupPath)) {
                             New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
                         }
-                        Write-Host "Backing up saved data for $browser from $dataPath to $backupPath..." -ForegroundColor Green
-                        Copy-Item -Path $dataPath -Destination $backupPath -Recurse -Force
-                        Write-Host "Backup completed for $browser." -ForegroundColor Yellow
+                        Write-Host "Backing up saved data for $browser from $dataPath to $backupPath" -ForegroundColor Green
+                        try {
+                            Copy-Item -Path $dataPath -Destination $backupPath -Recurse -Force -ErrorAction Stop
+                            Write-Host "Backup completed for $browser" -ForegroundColor Yellow
+                        } catch {
+                            Write-Host "Error backing up $browser data: $_" -ForegroundColor Red
+                        }
                     } else {
-                        Write-Host "User data path not found for $browser: $dataPath" -ForegroundColor Red
+                        Write-Host "User data path not found for $browser - $dataPath" -ForegroundColor Red
                     }
                 }
             }
@@ -89,10 +93,10 @@ foreach ($path in $registryPaths) {
     Get-InstalledBrowsers -regPath $path
 }
 
-# Output total number of browsers found and backed up
-Write-Host "Total number of browsers detected and backed up: $totalBrowsers" -ForegroundColor Yellow
+# Output total number of browsers found
+Write-Host "Total number of browsers found: $totalBrowsers" -ForegroundColor Yellow
 
-# Optional: Check common default paths for browsers
+# Check common default paths for browsers (in case registry misses them)
 $commonPaths = @{
     "Google Chrome" = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
     "Mozilla Firefox" = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"
@@ -123,16 +127,19 @@ foreach ($browser in $commonPaths.Keys) {
         }
         if (-not $alreadyFound) {
             $script:totalBrowsers++
-            # Back up if not already done
             $dataPath = $userDataPaths[$browser]
             if (Test-Path $dataPath) {
                 $backupPath = Join-Path $backupDir "$browser"
                 if (-not (Test-Path $backupPath)) {
                     New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
                 }
-                Write-Host "Backing up saved data for $browser from $dataPath to $backupPath..." -ForegroundColor Green
-                Copy-Item -Path $dataPath -Destination $backupPath -Recurse -Force
-                Write-Host "Backup completed for $browser." -ForegroundColor Yellow
+                Write-Host "Backing up saved data for $browser from $dataPath to $backupPath" -ForegroundColor Green
+                try {
+                    Copy-Item -Path $dataPath -Destination $backupPath -Recurse -Force -ErrorAction Stop
+                    Write-Host "Backup completed for $browser" -ForegroundColor Yellow
+                } catch {
+                    Write-Host "Error backing up $browser data: $_" -ForegroundColor Red
+                }
             }
         }
     }
@@ -141,4 +148,4 @@ foreach ($browser in $commonPaths.Keys) {
 # Final output
 Write-Host "Final count of browsers detected and backed up: $totalBrowsers" -ForegroundColor Yellow
 Write-Host "All saved data (including passwords, bookmarks, etc.) has been backed up to: $backupDir" -ForegroundColor Green
-Write-Host "Note: Passwords are encrypted in the backup. To view them, use a tool like NirSoft ChromePass on a working system." -ForegroundColor Yellow
+Write-Host "Note: Passwords are encrypted. To view them, restore to a working browser or use NirSoft ChromePass on a Windows system." -ForegroundColor Yellow
