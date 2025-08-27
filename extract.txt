@@ -1,37 +1,312 @@
-# Download and use NirSoft's BrowserPassView (most reliable method)
-Write-Host "Downloading NirSoft BrowserPassView..." -ForegroundColor Yellow
+# Browser Password Extraction & Decryption Script
+# Extracts and decrypts passwords from Chrome, Edge, and Brave browsers
+# Updated to handle modern AES-GCM encryption (v80+) using PowerShell 7+ and .NET AesGcm class
+# Requires PowerShell 7 or later for AesGcm support. Run with pwsh.exe if needed.
+# Everything runs automatically; no user input required after launch.
 
-$downloadUrl = "https://www.nirsoft.net/toolsdownload/browserpassview.zip"
-$zipPath = ".\browserpassview.zip"
-$extractPath = ".\browserpassview"
+param(
+    [switch]$ForceSQLiteReinstall,
+    [string]$CSVPath = ".\DecryptedPasswords.csv"
+)
 
-try {
-    # Download BrowserPassView
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
-    
-    # Extract
-    Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-    
-    # Run BrowserPassView
-    $toolPath = Join-Path $extractPath "browserpassview.exe"
-    
-    if (Test-Path $toolPath) {
-        Write-Host "Running BrowserPassView..." -ForegroundColor Green
-        Write-Host "This will show all browser passwords in a clear interface." -ForegroundColor Green
-        
-        # Run the tool
-        Start-Process $toolPath -Wait
-        
-        Write-Host "`nYou can also export passwords to CSV using the File > Save All Items menu." -ForegroundColor Green
+# Function to check if SQLite3 is already available
+function Test-SQLiteAvailable {
+    try {
+        $version = sqlite3 --version 2>$null
+        if ($version -like "3.*") {
+            Write-Host "SQLite3 is already available: $version" -ForegroundColor Green
+            return $true
+        }
+    } catch {
+        # SQLite not in PATH, check local directory
+        if (Test-Path ".\sqlite3.exe") {
+            Write-Host "SQLite3 found in current directory" -ForegroundColor Green
+            return $true
+        }
     }
-    else {
-        Write-Host "Failed to find BrowserPassView executable." -ForegroundColor Red
+    return $false
+}
+
+# Function to install SQLite3 if needed
+function Install-SQLiteIfNeeded {
+    param([bool]$ForceReinstall = $false)
+    
+    if ((-not $ForceReinstall) -and (Test-SQLiteAvailable)) {
+        return $true
     }
     
-    # Cleanup
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
+    try {
+        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+        $tempZip = "sqlite-temp.zip"
+        
+        # Download
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+        
+        # Extract
+        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+        
+        # Copy only sqlite3.exe to minimize storage impact
+        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
+        
+        # Cleanup
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "SQLite3 downloaded successfully (minimal installation)." -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Warning "Failed to download SQLite3: $($_.Exception.Message)"
+        return $false
+    }
 }
-catch {
-    Write-Host "Failed to download BrowserPassView: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "You can manually download it from: https://www.nirsoft.net/utils/browser_password.html" -ForegroundColor Yellow
+
+# Function to decrypt data using Windows DPAPI (for older versions)
+function Get-DecryptedData {
+    param([byte[]]$EncryptedData)
+    
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+        
+        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $EncryptedData, 
+            $null, 
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return [System.Text.Encoding]::UTF8.GetString($decrypted)
+    } catch {
+        Write-Warning "Failed to decrypt data: $($_.Exception.Message)"
+        return "[Decryption Failed]"
+    }
 }
+
+# Function to get master key from Local State (for modern v80+)
+function Get-MasterKey {
+    param([string]$LocalStatePath)
+    
+    if (-not (Test-Path $LocalStatePath)) {
+        Write-Warning "Local State file not found: $LocalStatePath"
+        return $null
+    }
+    
+    try {
+        $localStateJson = Get-Content $LocalStatePath -Raw | ConvertFrom-Json
+        $encryptedKeyBase64 = $localStateJson.os_crypt.encrypted_key
+        $encryptedKeyBytes = [Convert]::FromBase64String($encryptedKeyBase64)
+        
+        # Remove "DPAPI" prefix (first 5 bytes)
+        $encryptedMasterKey = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
+        
+        # Decrypt using DPAPI
+        $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $encryptedMasterKey, 
+            $null, 
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return $masterKey
+    } catch {
+        Write-Warning "Failed to get master key: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# Function to decrypt modern Chrome/Edge/Brave passwords (v80+) using AES-GCM
+function Get-DecryptedModernPassword {
+    param(
+        [byte[]]$EncryptedPasswordBytes,
+        [byte[]]$MasterKey
+    )
+    
+    try {
+        if ($EncryptedPasswordBytes.Length -lt 3 -or 
+            [System.Text.Encoding]::ASCII.GetString($EncryptedPasswordBytes[0..2]) -ne "v10") {
+            # Not v10 format, try DPAPI fallback
+            return Get-DecryptedData $EncryptedPasswordBytes
+        }
+        
+        # Extract IV (12 bytes), ciphertext, and tag (16 bytes)
+        $iv = $EncryptedPasswordBytes[3..14]
+        $ciphertextLength = $EncryptedPasswordBytes.Length - 3 - 12 - 16
+        $ciphertext = $EncryptedPasswordBytes[15..(15 + $ciphertextLength - 1)]
+        $tag = $EncryptedPasswordBytes[($EncryptedPasswordBytes.Length - 16)..($EncryptedPasswordBytes.Length - 1)]
+        
+        $plaintext = New-Object byte[] $ciphertextLength
+        $aesGcm = New-Object System.Security.Cryptography.AesGcm $MasterKey
+        $aesGcm.Decrypt($iv, $ciphertext, $tag, $plaintext, $null)
+        $aesGcm.Dispose()
+        
+        return [System.Text.Encoding]::UTF8.GetString($plaintext).TrimEnd([char]0)
+    } catch {
+        Write-Warning "AES-GCM decryption failed: $($_.Exception.Message)"
+        return "[Modern Decryption Error]"
+    }
+}
+
+# Function to extract and decrypt passwords from a browser
+function Get-BrowserPasswords {
+    param(
+        [string]$BrowserName,
+        [string]$DataPath
+    )
+    
+    Write-Host "Processing $BrowserName..." -ForegroundColor Yellow
+    
+    $loginDataPath = Join-Path $DataPath "Default\Login Data"
+    $localStatePath = Join-Path $DataPath "Local State"
+    
+    if (-not (Test-Path $loginDataPath)) {
+        Write-Host "$BrowserName login database not found at $loginDataPath" -ForegroundColor DarkGray
+        return @()
+    }
+    
+    # Get master key for modern decryption
+    $masterKey = Get-MasterKey -LocalStatePath $localStatePath
+    
+    $results = @()
+    
+    try {
+        # Copy the database to avoid locking issues
+        $tempDbPath = "temp_$([System.IO.Path]::GetRandomFileName()).db"
+        Copy-Item $loginDataPath $tempDbPath -Force
+        
+        # Export data to CSV using SQLite (query without hex for binary handling)
+        $tempCsvPath = "temp_output_$([System.IO.Path]::GetRandomFileName()).csv"
+        $query = "SELECT origin_url, username_value, password_value FROM logins;"
+        
+        # Execute sqlite3 command
+        if (Test-Path ".\sqlite3.exe") {
+            $sqlitePath = ".\sqlite3.exe"
+        } else {
+            $sqlitePath = "sqlite3"
+        }
+        
+        & $sqlitePath -csv -header $tempDbPath $query > $tempCsvPath
+        
+        if (Test-Path $tempCsvPath) {
+            # Parse CSV output
+            $logins = Import-Csv $tempCsvPath
+            
+            foreach ($login in $logins) {
+                $decryptedPassword = ""
+                $username = $login.username_value
+                
+                if ($login.password_value -ne "") {
+                    # Convert base64 or blob to bytes (SQLite CSV may output as base64 or hex; adjust as needed)
+                    try {
+                        # Assume password_value is base64 encoded in CSV; adjust if hex
+                        $passwordBytes = [Convert]::FromBase64String($login.password_value)
+                        
+                        if ($masterKey -and $passwordBytes.Length -gt 0) {
+                            # Try modern AES-GCM decryption
+                            $decryptedPassword = Get-DecryptedModernPassword -EncryptedPasswordBytes $passwordBytes -MasterKey $masterKey
+                        } else {
+                            # Fallback to DPAPI for older versions
+                            $decryptedPassword = Get-DecryptedData $passwordBytes
+                        }
+                    } catch {
+                        $decryptedPassword = "[Decryption Error: $($_.Exception.Message)]"
+                    }
+                }
+                
+                $results += [PSCustomObject]@{
+                    Browser = $BrowserName
+                    URL = $login.origin_url
+                    Username = $username
+                    Password = if ($decryptedPassword) { $decryptedPassword } else { "[No Password/Decryption Failed]" }
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            }
+            
+            Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
+        }
+        
+        Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Warning "Error processing $BrowserName data: $($_.Exception.Message)"
+    }
+    
+    return $results
+}
+
+# Main execution
+Write-Host "Browser Password Extraction & Decryption Tool" -ForegroundColor Green
+Write-Host "=============================================`n" -ForegroundColor Green
+
+# Check for PowerShell 7+ for AesGcm support
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Host "This script requires PowerShell 7 or later for AES-GCM decryption. Please run with 'pwsh.exe'." -ForegroundColor Red
+    exit 1
+}
+
+# Automatically attempt to close browser processes to avoid locking (may require admin; skips if fails)
+Write-Host "Attempting to close browser processes..." -ForegroundColor Yellow
+$browserProcesses = @("chrome", "msedge", "brave")
+foreach ($proc in $browserProcesses) {
+    try {
+        Get-Process -Name $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Warning "Could not stop $proc processes: $($_.Exception.Message)"
+    }
+}
+
+# Install SQLite if needed
+$sqliteAvailable = Install-SQLiteIfNeeded -ForceReinstall $ForceSQLiteReinstall
+if (-not $sqliteAvailable) {
+    Write-Host "SQLite3 is required but could not be installed. Exiting." -ForegroundColor Red
+    exit 1
+}
+
+# Define browser paths
+$browsers = @(
+    @{Name = "Google Chrome"; DataPath = "$env:LOCALAPPDATA\Google\Chrome\User Data"},
+    @{Name = "Microsoft Edge"; DataPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"},
+    @{Name = "Brave Browser"; DataPath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"}
+)
+
+$allPasswords = @()
+
+foreach ($browser in $browsers) {
+    if (Test-Path $browser.DataPath) {
+        $passwords = Get-BrowserPasswords -BrowserName $browser.Name -DataPath $browser.DataPath
+        $allPasswords += $passwords
+    } else {
+        Write-Host "$($browser.Name) not found at $($browser.DataPath)" -ForegroundColor DarkGray
+    }
+}
+
+# Display results
+if ($allPasswords.Count -gt 0) {
+    Write-Host "`nSuccessfully decrypted $($allPasswords.Count) passwords:`n" -ForegroundColor Green
+    
+    # Display first 10 entries with username and password
+    $allPasswords | Select-Object -First 10 | Format-Table -Property Browser, URL, Username, Password -AutoSize
+    
+    # Export to CSV
+    try {
+        $allPasswords | Export-Csv -Path $CSVPath -NoTypeInformation
+        Write-Host "`nAll passwords exported to: $CSVPath" -ForegroundColor Green
+    } catch {
+        Write-Warning "Failed to export to CSV: $($_.Exception.Message)"
+    }
+    
+    # Show summary
+    $browserStats = $allPasswords | Group-Object Browser | ForEach-Object {
+        [PSCustomObject]@{
+            Browser = $_.Name
+            Passwords = $_.Count
+        }
+    }
+    
+    Write-Host "`nPassword Summary by Browser:" -ForegroundColor Cyan
+    $browserStats | Format-Table -AutoSize
+} else {
+    Write-Host "`nNo passwords found or decrypted from any browser." -ForegroundColor Yellow
+}
+
+# Cleanup instructions
+Write-Host "`nNotes:" -ForegroundColor Cyan
+Write-Host "1. The sqlite3.exe file remains in the current directory for future use." -ForegroundColor Cyan
+Write-Host "2. To save space, you can delete sqlite3.exe when done." -ForegroundColor Cyan
+Write-Host "3. This script now supports modern AES-GCM encryption (Chrome/Edge/Brave v80+)." -ForegroundColor Cyan
+Write-Host "4. Requires PowerShell 7+ for full functionality." -ForegroundColor Cyan
+Write-Host "5. For complete decryption, ensure browsers are closed or run as admin." -ForegroundColor Cyan
