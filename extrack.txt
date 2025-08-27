@@ -39,7 +39,7 @@ function Test-BrowserInstalled {
         }
         return $false
     } catch {
-        Write-Host "Error checking registry $regPath : $_" -ForegroundColor Red
+        Write-Host "Error checking registry $regPath - $_" -ForegroundColor Red
         return $false
     }
 }
@@ -91,9 +91,9 @@ function Get-PasswordsFromDatabase {
 }
 
 # Verify ChromePass.exe exists
-$chromePassPath = "$PSScriptRoot\ChromePass.exe"
+$chromePassPath = "C:\Users\ksvar\OneDrive\Desktop\Powershell\ChromePass.exe"
 if (-not (Test-Path $chromePassPath)) {
-    Write-Host "Error: ChromePass.exe not found in $PSScriptRoot. Please download from https://www.nirsoft.net/utils/chromepass.html and place in $PSScriptRoot" -ForegroundColor Red
+    Write-Host "Error: ChromePass.exe not found in C:\Users\ksvar\OneDrive\Desktop\Powershell. Please download from https://www.nirsoft.net/utils/chromepass.html and place it there." -ForegroundColor Red
     Write-Host "Press Enter to exit..." -ForegroundColor Yellow
     Read-Host
     exit
