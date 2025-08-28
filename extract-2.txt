@@ -1,15 +1,13 @@
-# Brave Browser Password Extraction Script
-# Fixed version without HTML encoding issues
+# Brave Browser Encrypted Password Extraction Script
+# Extracts encrypted password data for future decryption
 
 param(
-    [string]$CSVPath = ".\BravePasswords.csv"
+    [string]$CSVPath = ".\BraveEncryptedPasswords.csv",
+    [string]$JSONPath = ".\BraveEncryptedData.json"
 )
 
-Add-Type -AssemblyName System.Security
-Add-Type -AssemblyName System.Core
-
-Write-Host "Brave Password Extraction Tool" -ForegroundColor Green
-Write-Host "==============================" -ForegroundColor Green
+Write-Host "Brave Encrypted Password Extraction Tool" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
 
 # Function to install SQLite3 if needed
 function Install-SQLiteIfNeeded {
@@ -33,22 +31,6 @@ function Install-SQLiteIfNeeded {
     }
 }
 
-# Function to decrypt data using Windows DPAPI
-function Get-DecryptedData {
-    param([byte[]]$EncryptedData)
-    
-    try {
-        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
-            $EncryptedData, 
-            $null, 
-            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
-        return [System.Text.Encoding]::UTF8.GetString($decrypted)
-    } catch {
-        return $null
-    }
-}
-
 # Function to extract master key from Brave's Local State file
 function Get-BraveMasterKey {
     $braveDataPath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
@@ -65,80 +47,27 @@ function Get-BraveMasterKey {
         $encryptedKey = $localStateContent.os_crypt.encrypted_key
         
         if (-not $encryptedKey) {
-            Write-Host "No encrypted key found in Local State" -ForegroundColor Red
+            Write-Host "No encrypted key found in Local State" -ForegroundColor Yellow
             return $null
         }
         
         Write-Host "Found encrypted master key" -ForegroundColor Green
         
-        # Decode from base64
-        $encryptedKeyBytes = [System.Convert]::FromBase64String($encryptedKey)
-        Write-Host "Encrypted key length: $($encryptedKeyBytes.Length) bytes" -ForegroundColor Yellow
-        
-        # Remove the DPAPI prefix (first 5 bytes: "DPAPI")
-        if ($encryptedKeyBytes.Length -gt 5) {
-            $keyToDecrypt = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
-            
-            # Decrypt using DPAPI
-            Write-Host "Decrypting master key..." -ForegroundColor Yellow
-            $decryptedKeyString = Get-DecryptedData $keyToDecrypt
-            
-            if ($decryptedKeyString) {
-                Write-Host "Successfully decrypted master key!" -ForegroundColor Green
-                $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($decryptedKeyString)
-                Write-Host "Master key length: $($keyBytes.Length) bytes" -ForegroundColor Green
-                return $keyBytes
-            } else {
-                Write-Host "Failed to decrypt master key using DPAPI" -ForegroundColor Red
-            }
-        } else {
-            Write-Host "Invalid master key format" -ForegroundColor Red
+        # Return the base64 encoded master key for future use
+        return @{
+            EncryptedKey = $encryptedKey
+            KeyLength = ([System.Convert]::FromBase64String($encryptedKey)).Length
+            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         }
+        
     } catch {
         Write-Host "Error extracting master key: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
     }
-    
-    return $null
 }
 
-# Function to decrypt password data
-function Decrypt-PasswordData {
-    param(
-        [byte[]]$EncryptedData,
-        [byte[]]$MasterKey
-    )
-    
-    Write-Host "Attempting to decrypt data of length: $($EncryptedData.Length) bytes" -ForegroundColor Yellow
-    
-    # First, try to detect encryption method
-    if ($EncryptedData.Length -gt 3) {
-        $prefix = [System.Text.Encoding]::ASCII.GetString($EncryptedData, 0, 3)
-        Write-Host "Data prefix: '$prefix'" -ForegroundColor Yellow
-        
-        if ($prefix -eq "v10" -or $prefix -eq "v11") {
-            Write-Host "Detected modern encryption (v10/v11)" -ForegroundColor Green
-            return "[Modern encryption - requires .NET 5+]"
-        }
-        elseif ($prefix -eq "v20") {
-            Write-Host "Detected v20 encryption (Brave-specific)" -ForegroundColor Green
-            return "[v20 encryption - specialized tool needed]"
-        }
-    }
-    
-    # Fallback to DPAPI for legacy encryption
-    Write-Host "Trying DPAPI decryption..." -ForegroundColor Yellow
-    $result = Get-DecryptedData $EncryptedData
-    if ($result) {
-        Write-Host "DPAPI decryption successful!" -ForegroundColor Green
-        return $result
-    }
-    
-    Write-Host "All decryption methods failed" -ForegroundColor Red
-    return "[Decryption failed]"
-}
-
-# Function to extract and decrypt passwords from Brave browser
-function Get-BravePasswords {
+# Function to extract encrypted passwords from Brave browser
+function Get-BraveEncryptedPasswords {
     $braveDataPath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
     $loginDataPath = Join-Path $braveDataPath "Default\Login Data"
     
@@ -149,10 +78,8 @@ function Get-BravePasswords {
     
     Write-Host "Found Brave login database" -ForegroundColor Green
     
-    # Extract master key
-    $masterKey = Get-BraveMasterKey
-    
     $results = @()
+    $encryptedData = @()
     
     try {
         # Copy the database to avoid locking issues
@@ -168,8 +95,16 @@ function Get-BravePasswords {
             $sqlitePath = "sqlite3"
         }
         
-        # Query the database
-        $query = "SELECT origin_url, username_value, hex(password_value) as password_hex FROM logins;"
+        # Query the database - get both hex and base64 representations
+        $query = @"
+SELECT 
+    origin_url, 
+    username_value, 
+    hex(password_value) as password_hex,
+    quote(password_value) as password_quoted,
+    length(password_value) as password_length
+FROM logins;
+"@
         & $sqlitePath -csv -header $tempDbPath $query > $tempCsvPath
         
         if (Test-Path $tempCsvPath) {
@@ -179,34 +114,55 @@ function Get-BravePasswords {
             $counter = 0
             foreach ($login in $logins) {
                 $counter++
-                Write-Host "Processing entry $counter/$($logins.Count)..." -ForegroundColor Yellow
                 
-                $decryptedPassword = "[No Data]"
+                # Create a unique identifier for this entry
+                $entryId = [System.Guid]::NewGuid().ToString()
                 
+                # Store encrypted data for future decryption
+                $encryptedEntry = @{
+                    Id = $entryId
+                    URL = $login.origin_url
+                    Username = $login.username_value
+                    HexData = $login.password_hex
+                    DataLength = $login.password_length
+                    EncryptionVersion = "Unknown"
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+                
+                # Try to detect encryption version
                 if ($login.password_hex -and $login.password_hex -match "^[0-9A-Fa-f]+$") {
                     try {
-                        # Convert hex string to byte array
                         $hexString = $login.password_hex
-                        Write-Host "Password data length: $($hexString.Length/2) bytes" -ForegroundColor Gray
-                        
-                        $passwordBytes = [byte[]]::new($hexString.Length / 2)
-                        for ($i = 0; $i -lt $hexString.Length; $i += 2) {
-                            $passwordBytes[$i / 2] = [Convert]::ToByte($hexString.Substring($i, 2), 16)
+                        if ($hexString.Length -ge 6) {
+                            $prefixBytes = [System.Convert]::ToByte($hexString.Substring(0, 2), 16), 
+                                          [System.Convert]::ToByte($hexString.Substring(2, 2), 16),
+                                          [System.Convert]::ToByte($hexString.Substring(4, 2), 16)
+                            $prefix = [System.Text.Encoding]::ASCII.GetString($prefixBytes)
+                            
+                            if ($prefix -eq "v10" -or $prefix -eq "v11" -or $prefix -eq "v20") {
+                                $encryptedEntry.EncryptionVersion = $prefix
+                            }
                         }
-                        
-                        # Decrypt the password
-                        $decryptedPassword = Decrypt-PasswordData $passwordBytes $masterKey
-                        
                     } catch {
-                        $decryptedPassword = "[Error: $($_.Exception.Message)]"
+                        # Ignore detection errors
                     }
                 }
                 
+                $encryptedData += $encryptedEntry
+                
+                # Add to results for CSV
                 $results += [PSCustomObject]@{
+                    ID = $entryId
                     Browser = "Brave"
                     URL = $login.origin_url
                     Username = $login.username_value
-                    Password = $decryptedPassword
+                    EncryptionVersion = $encryptedEntry.EncryptionVersion
+                    DataLength = $login.password_length
+                    HexData = if ($login.password_hex.Length -gt 100) { 
+                                $login.password_hex.Substring(0, 100) + "..." 
+                              } else { 
+                                $login.password_hex 
+                              }
                     ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 }
                 
@@ -220,11 +176,20 @@ function Get-BravePasswords {
         }
         
         Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
+        
+        # Return both the summary and detailed encrypted data
+        return @{
+            Summary = $results
+            DetailedData = $encryptedData
+        }
+        
     } catch {
         Write-Host "Error processing Brave data: $($_.Exception.Message)" -ForegroundColor Red
+        return @{
+            Summary = @()
+            DetailedData = @()
+        }
     }
-    
-    return $results
 }
 
 # Main execution
@@ -235,35 +200,74 @@ if (-not (Test-Path ".\sqlite3.exe")) {
     }
 }
 
-Write-Host "Starting Brave password extraction..." -ForegroundColor Green
-$bravePasswords = Get-BravePasswords
+Write-Host "Starting Brave encrypted password extraction..." -ForegroundColor Green
+
+# Extract master key information
+$masterKeyInfo = Get-BraveMasterKey
+
+# Extract encrypted passwords
+$extractionResult = Get-BraveEncryptedPasswords
+$summaryData = $extractionResult.Summary
+$detailedData = $extractionResult.DetailedData
 
 # Display results
-if ($bravePasswords.Count -gt 0) {
-    Write-Host "`nProcessed $($bravePasswords.Count) passwords from Brave:" -ForegroundColor Green
+if ($summaryData.Count -gt 0) {
+    Write-Host "`nSuccessfully extracted $($summaryData.Count) encrypted passwords!" -ForegroundColor Green
     
-    # Count successfully decrypted passwords
-    $successCount = ($bravePasswords | Where-Object { 
-        $_.Password -notmatch "\[.*\]" -and $_.Password -ne "[No Data]" 
-    }).Count
-    
-    $successRate = [math]::Round(($successCount / $bravePasswords.Count) * 100, 2)
-    
-    # Show sample
-    $bravePasswords | Select-Object -First 10 | Format-Table -Property URL, Username, Password -AutoSize
-    
-    # Export to CSV
+    # Export summary to CSV
     try {
-        $bravePasswords | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8 -Force
-        Write-Host "`nExported to: $CSVPath" -ForegroundColor Green
-        Write-Host "Success rate: $successRate% ($successCount/$($bravePasswords.Count))" -ForegroundColor Cyan
-        
+        $summaryData | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8 -Force
+        Write-Host "Summary exported to: $CSVPath" -ForegroundColor Green
     } catch {
         Write-Host "CSV export failed: $($_.Exception.Message)" -ForegroundColor Red
     }
     
+    # Export detailed data to JSON
+    try {
+        $exportData = @{
+            Metadata = @{
+                ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                Browser = "Brave"
+                BrowserVersion = "Unknown"
+                OS = [System.Environment]::OSVersion.VersionString
+            }
+            MasterKey = $masterKeyInfo
+            EncryptedPasswords = $detailedData
+        }
+        
+        $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $JSONPath -Encoding UTF8
+        Write-Host "Detailed encrypted data exported to: $JSONPath" -ForegroundColor Green
+    } catch {
+        Write-Host "JSON export failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    
+    # Show summary
+    Write-Host "`nEncryption Version Summary:" -ForegroundColor Cyan
+    $encryptionStats = $summaryData | Group-Object EncryptionVersion | ForEach-Object {
+        [PSCustomObject]@{
+            Version = if ($_.Name) { $_.Name } else { "Unknown" }
+            Count = $_.Count
+            Percentage = "$([math]::Round(($_.Count / $summaryData.Count) * 100, 2))%"
+        }
+    }
+    
+    $encryptionStats | Format-Table -AutoSize
+    
+    Write-Host "`nSample of extracted data:" -ForegroundColor Cyan
+    $summaryData | Select-Object -First 5 | Format-Table -Property URL, Username, EncryptionVersion, DataLength -AutoSize
+    
+    # Important information for future decryption
+    Write-Host "`nIMPORTANT FOR FUTURE DECRYPTION:" -ForegroundColor Yellow
+    Write-Host "1. Keep the JSON file safe - it contains all encrypted data" -ForegroundColor Yellow
+    Write-Host "2. The master key is encrypted with DPAPI and tied to your user account" -ForegroundColor Yellow
+    Write-Host "3. To decrypt in the future, you'll need:" -ForegroundColor Yellow
+    Write-Host "   - This JSON file" -ForegroundColor Yellow
+    Write-Host "   - Access to the same Windows user account" -ForegroundColor Yellow
+    Write-Host "   - The Brave browser data directory" -ForegroundColor Yellow
+    Write-Host "4. Most passwords use v20 encryption - newer tools may support this" -ForegroundColor Yellow
+    
 } else {
-    Write-Host "No passwords found in Brave." -ForegroundColor Yellow
+    Write-Host "No encrypted passwords found in Brave." -ForegroundColor Yellow
 }
 
-Write-Host "`nBrave password extraction completed." -ForegroundColor Green
+Write-Host "`nEncrypted data extraction completed." -ForegroundColor Green
