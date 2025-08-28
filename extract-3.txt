@@ -268,7 +268,7 @@ FROM logins;
             Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
             
         } catch {
-            Write-Host "    Error processing $BrowserName profile $profileName: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "    Error processing $BrowserName profile $($profileName): $($_.Exception.Message)" -ForegroundColor Red
         }
     }
     
