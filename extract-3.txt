@@ -1,97 +1,58 @@
-# Fixed NirSoft ChromePass Download Script
+# Alternative ChromePass Download from different source
 $tempDir = "$env:TEMP\ChromePass"
-$chromePassUrl = "https://www.nirsoft.net/utils/chromepass.zip"
 $outputFile = ".\BravePasswords.csv"
 
-# Create temporary directory
+# Try multiple download sources
+$downloadSources = @(
+    "https://www.nirsoft.net/utils/chromepass.zip",
+    "https://web.archive.org/web/20230000000000*/https://www.nirsoft.net/utils/chromepass.zip",
+    "https://majorgeeks.com/files/details/chromepass.html"
+)
+
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
-try {
-    Write-Host "Downloading NirSoft ChromePass..." -ForegroundColor Yellow
-    
-    # Download with retry logic and proper error handling
-    $maxRetries = 3
-    $retryCount = 0
-    $success = $false
-    
-    do {
-        try {
-            $zipPath = "$tempDir\chromepass.zip"
-            Write-Host "Attempt $($retryCount + 1) of $maxRetries..." -ForegroundColor Yellow
-            
-            # Use different download method
-            $webClient = New-Object System.Net.WebClient
-            $webClient.DownloadFile($chromePassUrl, $zipPath)
-            $success = $true
-            Write-Host "Download completed successfully!" -ForegroundColor Green
-            
-        } catch {
-            $retryCount++
-            Write-Host "Download attempt $retryCount failed: $($_.Exception.Message)" -ForegroundColor Red
-            if ($retryCount -lt $maxRetries) {
-                Write-Host "Retrying in 3 seconds..." -ForegroundColor Yellow
-                Start-Sleep -Seconds 3
-            }
-        }
-    } while (-not $success -and $retryCount -lt $maxRetries)
-    
-    if (-not $success) {
-        throw "Failed to download ChromePass after $maxRetries attempts"
-    }
-    
-    # Verify ZIP file integrity
-    if (-not (Test-Path $zipPath)) {
-        throw "Downloaded file not found"
-    }
-    
-    $fileSize = (Get-Item $zipPath).Length
-    if ($fileSize -lt 1024) {
-        throw "Downloaded file is too small ($fileSize bytes), likely corrupted"
-    }
-    
-    Write-Host "Extracting ChromePass (file size: $fileSize bytes)..." -ForegroundColor Yellow
-    
-    # Extract with error handling
+foreach ($source in $downloadSources) {
     try {
-        Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
-    } catch {
-        # Try manual extraction as fallback
-        Write-Host "Standard extraction failed, trying alternative method..." -ForegroundColor Yellow
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $tempDir)
-    }
-    
-    # Look for the executable in common locations
-    $chromePassExe = Get-ChildItem -Path $tempDir -Recurse -Filter "ChromePass.exe" | Select-Object -First 1
-    
-    if ($chromePassExe -and (Test-Path $chromePassExe.FullName)) {
-        Write-Host "Extracting Brave passwords..." -ForegroundColor Green
+        Write-Host "Trying download from: $source" -ForegroundColor Yellow
         
-        # Run ChromePass to extract passwords
-        & $chromePassExe.FullName /scomma $outputFile
+        $zipPath = "$tempDir\chromepass.zip"
         
-        if (Test-Path $outputFile) {
-            $passwords = Import-Csv $outputFile
-            Write-Host "Successfully extracted $($passwords.Count) passwords from Brave!" -ForegroundColor Green
-            Write-Host "Saved to: $outputFile" -ForegroundColor Green
-            
-            # Display first few entries
-            if ($passwords.Count -gt 0) {
-                Write-Host "`nFirst 10 passwords:" -ForegroundColor Cyan
-                $passwords | Select-Object -First 10 | Format-Table -AutoSize
-            }
-        } else {
-            Write-Host "No passwords were extracted." -ForegroundColor Yellow
+        # Use BitsTransfer for more reliable downloads
+        Start-BitsTransfer -Source $source -Destination $zipPath -ErrorAction Stop
+        
+        if (Test-Path $zipPath -PathType Leaf) {
+            Write-Host "Download successful!" -ForegroundColor Green
+            break
         }
-    } else {
-        Write-Host "ChromePass.exe not found in the extracted files." -ForegroundColor Red
-        Write-Host "Contents of temp directory:" -ForegroundColor Yellow
-        Get-ChildItem -Path $tempDir -Recurse | Format-Table Name, Length
+    } catch {
+        Write-Host "Download failed: $($_.Exception.Message)" -ForegroundColor Red
+        continue
     }
-    
-} catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-} finally {
-    # Cleanup
-    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+if (Test-Path "$tempDir\chromepass.zip") {
+    try {
+        Expand-Archive -Path "$tempDir\chromepass.zip" -DestinationPath $tempDir -Force
+        $chromePassExe = Get-ChildItem -Path $tempDir -Recurse -Filter "ChromePass.exe" | Select-Object -First 1
+        
+        if ($chromePassExe) {
+            & $chromePassExe.FullName /scomma $outputFile
+            Write-Host "Passwords extracted to $outputFile" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "Extraction failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+} else {
+    Write-Host "All download attempts failed. Trying manual approach..." -ForegroundColor Red
+    
+    # Manual download instructions
+    Write-Host "`nMANUAL DOWNLOAD INSTRUCTIONS:" -ForegroundColor Yellow
+    Write-Host "1. Open your web browser" -ForegroundColor White
+    Write-Host "2. Go to: https://www.nirsoft.net/utils/chromepass.html" -ForegroundColor White
+    Write-Host "3. Download ChromePass.zip" -ForegroundColor White
+    Write-Host "4. Extract the ZIP file manually" -ForegroundColor White
+    Write-Host "5. Run ChromePass.exe from the extracted folder" -ForegroundColor White
+}
+
+# Cleanup
+Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
