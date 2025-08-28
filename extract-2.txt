@@ -1,131 +1,350 @@
-# Automated Browser Password Extraction Using LaZagne Executable
-# Downloads LaZagne.exe, runs it for browsers, parses output to CSV
-# Requires PowerShell 7+; run as admin for best results
-# Outputs to timestamped CSV
+# Browser Password Extraction & Decryption Script
+# Fixed version with proper decryption handling
 
 param(
-    [string]$OutputDir = ".\"
+    [switch]$ForceSQLiteReinstall,
+    [string]$CSVPath = ".\DecryptedPasswords.csv"
 )
 
-# Generate timestamp for output files
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$csvPath = Join-Path $OutputDir "LaZagne_BrowserPasswords_$timestamp.csv"
-$lazagneExe = ".\LaZagne.exe"
+# Add required assemblies
+Add-Type -AssemblyName System.Security
+Add-Type -AssemblyName System.Core
 
-# Function to close browser processes
-function Close-BrowserProcesses {
-    Write-Host "Closing browser processes..." -ForegroundColor Yellow
-    $browserProcesses = @("chrome", "msedge", "brave")
-    foreach ($proc in $browserProcesses) {
-        try {
-            Get-Process -Name $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Milliseconds 500
-        } catch {
-            Write-Warning "Could not stop $proc: $($_.Exception.Message)"
+# Function to check if SQLite3 is already available
+function Test-SQLiteAvailable {
+    try {
+        $version = sqlite3 --version 2>$null
+        if ($version -like "3.*") {
+            Write-Host "SQLite3 is already available: $version" -ForegroundColor Green
+            return $true
+        }
+    } catch {
+        if (Test-Path ".\sqlite3.exe") {
+            Write-Host "SQLite3 found in current directory" -ForegroundColor Green
+            return $true
         }
     }
+    return $false
 }
 
-# Function to download LaZagne executable
-function Download-LaZagne {
-    Write-Host "Downloading LaZagne executable..." -ForegroundColor Yellow
+# Function to install SQLite3 if needed
+function Install-SQLiteIfNeeded {
+    param([bool]$ForceReinstall = $false)
+    
+    if ((-not $ForceReinstall) -and (Test-SQLiteAvailable)) {
+        return $true
+    }
+    
+    Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
     try {
-        # Latest release: v2.4.5 (update URL if newer version available; check https://github.com/AlessandroZ/LaZagne/releases)
-        $releaseUrl = "https://github.com/AlessandroZ/LaZagne/releases/download/2.4.5/LaZagne.exe"
-        Invoke-WebRequest -Uri $releaseUrl -OutFile $lazagneExe -UseBasicParsing -ErrorAction Stop
-        Write-Host "LaZagne downloaded successfully." -ForegroundColor Green
+        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+        $tempZip = "sqlite-temp.zip"
+        
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
+        
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
         return $true
     } catch {
-        Write-Warning "Failed to download LaZagne: $($_.Exception.Message)"
+        Write-Warning "Failed to download SQLite3: $($_.Exception.Message)"
         return $false
     }
 }
 
-# Function to run LaZagne and parse output
-function Run-LaZagne {
-    Write-Host "Running LaZagne to extract browser passwords..." -ForegroundColor Yellow
+# Function to decrypt data using Windows DPAPI
+function Get-DecryptedData {
+    param([byte[]]$EncryptedData)
+    
     try {
-        # Run LaZagne for browsers only, output to console (use -oA for all formats if needed)
-        $output = & $lazagneExe browsers 2>&1
-        $output | Out-File ".\lazagne_output_$timestamp.txt" -Force  # Save raw output for debugging
+        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $EncryptedData, 
+            $null, 
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return [System.Text.Encoding]::UTF8.GetString($decrypted)
+    } catch {
+        return $null
+    }
+}
+
+# Function to extract master key from browser's Local State file
+function Get-BrowserMasterKey {
+    param([string]$DataPath)
+    
+    $localStatePath = Join-Path $DataPath "Local State"
+    if (-not (Test-Path $localStatePath)) {
+        return $null
+    }
+    
+    try {
+        $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
+        $encryptedKey = $localStateContent.os_crypt.encrypted_key
         
-        # Parse output for browser passwords (LaZagne outputs in a structured text format)
-        $allPasswords = @()
-        $lines = $output -split "`n"
-        $currentBrowser = ""
-        foreach ($line in $lines) {
-            if ($line -match "^\[.*\] (Chrome|Edge|Brave|Firefox|Opera)") {
-                $currentBrowser = $matches[1]
-            } elseif ($line -match "URL:\s*(.+?)\s+Login:\s*(.+?)\s+Password:\s*(.+?)$") {
-                $allPasswords += [PSCustomObject]@{
-                    Browser = $currentBrowser
-                    URL = $matches[1].Trim()
-                    Username = $matches[2].Trim()
-                    Password = $matches[3].Trim()
+        if (-not $encryptedKey) {
+            return $null
+        }
+        
+        $encryptedKeyBytes = [System.Convert]::FromBase64String($encryptedKey)
+        
+        # Remove DPAPI prefix (first 5 bytes)
+        if ($encryptedKeyBytes.Length -gt 5) {
+            $keyToDecrypt = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
+            $decryptedKey = Get-DecryptedData $keyToDecrypt
+            
+            if ($decryptedKey) {
+                return [System.Text.Encoding]::UTF8.GetBytes($decryptedKey)
+            }
+        }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
+# Function to decrypt modern Chrome passwords using the master key
+function Get-DecryptedModernPassword {
+    param(
+        [byte[]]$EncryptedData,
+        [byte[]]$MasterKey
+    )
+    
+    try {
+        # Check for minimum length and proper prefix
+        if ($EncryptedData.Length -lt 15) {
+            return "[Invalid encrypted data]"
+        }
+        
+        # Extract components from encrypted data
+        $nonce = $EncryptedData[3..14]  # 12-byte nonce after "v10"/"v11" prefix
+        $ciphertext = $EncryptedData[15..($EncryptedData.Length - 17)]  # ciphertext
+        $tag = $EncryptedData[($EncryptedData.Length - 16)..($EncryptedData.Length - 1)]  # 16-byte tag
+        
+        # Try to use .NET's built-in AES-GCM if available (.NET 5+)
+        try {
+            $aesGcmType = [System.Security.Cryptography.AesGcm]
+            $plaintext = New-Object byte[]($ciphertext.Length)
+            
+            $aesGcm = New-Object System.Security.Cryptography.AesGcm($MasterKey)
+            $aesGcm.Decrypt($nonce, $ciphertext, $tag, $plaintext)
+            
+            return [System.Text.Encoding]::UTF8.GetString($plaintext)
+        } catch {
+            # Fallback to DPAPI if AES-GCM fails
+            Write-Host "AES-GCM failed, trying DPAPI fallback..." -ForegroundColor Yellow
+            $dpapiResult = Get-DecryptedData $EncryptedData
+            if ($dpapiResult) {
+                return $dpapiResult
+            }
+            return "[AES-GCM decryption failed]"
+        }
+    } catch {
+        return "[Modern decryption error: $($_.Exception.Message)]"
+    }
+}
+
+# Main function to decrypt password data
+function Decrypt-PasswordData {
+    param(
+        [byte[]]$EncryptedData,
+        [byte[]]$MasterKey
+    )
+    
+    # First, try to detect encryption method
+    if ($EncryptedData.Length -gt 3) {
+        $prefix = [System.Text.Encoding]::ASCII.GetString($EncryptedData, 0, 3)
+        
+        if ($prefix -eq "v10" -or $prefix -eq "v11") {
+            # Modern AES-GCM encryption
+            if ($MasterKey) {
+                return Get-DecryptedModernPassword $EncryptedData $MasterKey
+            } else {
+                return "[Master key required for modern encryption]"
+            }
+        }
+    }
+    
+    # Fallback to DPAPI for legacy encryption
+    $result = Get-DecryptedData $EncryptedData
+    if ($result) {
+        return $result
+    }
+    
+    return "[Decryption failed]"
+}
+
+# Function to extract and decrypt passwords from a browser
+function Get-BrowserPasswords {
+    param(
+        [string]$BrowserName,
+        [string]$DataPath
+    )
+    
+    Write-Host "Processing $BrowserName..." -ForegroundColor Yellow
+    
+    $loginDataPath = Join-Path $DataPath "Default\Login Data"
+    if (-not (Test-Path $loginDataPath)) {
+        Write-Host "Login database not found for $BrowserName" -ForegroundColor DarkGray
+        return @()
+    }
+    
+    # Extract master key
+    $masterKey = Get-BrowserMasterKey $DataPath
+    if ($masterKey) {
+        Write-Host "Master key extracted successfully" -ForegroundColor Green
+    } else {
+        Write-Host "Using legacy decryption methods" -ForegroundColor Yellow
+    }
+    
+    $results = @()
+    
+    try {
+        # Copy database to avoid locking issues
+        $tempDbPath = "temp_$([System.IO.Path]::GetRandomFileName()).db"
+        Copy-Item $loginDataPath $tempDbPath -Force
+        
+        # Export data using SQLite
+        $tempCsvPath = "temp_output_$([System.IO.Path]::GetRandomFileName()).csv"
+        
+        if (Test-Path ".\sqlite3.exe") {
+            $sqlitePath = ".\sqlite3.exe"
+        } else {
+            $sqlitePath = "sqlite3"
+        }
+        
+        # Query the database
+        $query = "SELECT origin_url, username_value, password_value FROM logins;"
+        & $sqlitePath -csv -header $tempDbPath $query > $tempCsvPath
+        
+        if (Test-Path $tempCsvPath) {
+            $logins = Import-Csv $tempCsvPath
+            
+            foreach ($login in $logins) {
+                $decryptedPassword = "[No Data]"
+                
+                if ($login.password_value) {
+                    try {
+                        # Convert password value to byte array
+                        $hexString = $login.password_value -replace '[^0-9A-Fa-f]', ''
+                        if ($hexString.Length -ge 2) {
+                            $passwordBytes = [byte[]]::new($hexString.Length / 2)
+                            for ($i = 0; $i -lt $hexString.Length; $i += 2) {
+                                $passwordBytes[$i / 2] = [Convert]::ToByte($hexString.Substring($i, 2), 16)
+                            }
+                            
+                            # Decrypt the password
+                            $decryptedPassword = Decrypt-PasswordData $passwordBytes $masterKey
+                        }
+                    } catch {
+                        $decryptedPassword = "[Error: $($_.Exception.Message)]"
+                    }
+                }
+                
+                $results += [PSCustomObject]@{
+                    Browser = $BrowserName
+                    URL = $login.origin_url
+                    Username = $login.username_value
+                    Password = $decryptedPassword
                     ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 }
             }
+            
+            Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
         }
         
-        if ($allPasswords.Count -gt 0) {
-            $allPasswords | Export-Csv -Path $csvPath -NoTypeInformation -Force
-            Write-Host "Passwords exported to: $csvPath" -ForegroundColor Green
-            return $allPasswords
-        } else {
-            Write-Warning "No passwords parsed from LaZagne output. Check raw file: laZagne_output_$timestamp.txt"
-            return @()
-        }
+        Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
     } catch {
-        Write-Warning "LaZagne execution failed: $($_.Exception.Message)"
-        return @()
+        Write-Warning "Error processing $BrowserName: $($_.Exception.Message)"
     }
+    
+    return $results
 }
 
 # Main execution
-Write-Host "Automated Browser Password Extraction with LaZagne" -ForegroundColor Green
-Write-Host "=================================================`n" -ForegroundColor Green
+Write-Host "Browser Password Extraction Tool" -ForegroundColor Green
+Write-Host "================================`n" -ForegroundColor Green
 
-# Check PowerShell version
-if ($PSVersionTable.PSVersion.Major -lt 7) {
-    Write-Host "This script requires PowerShell 7 or later. Run with 'pwsh.exe'." -ForegroundColor Red
+# Check if browsers are closed
+Write-Host "Ensure browsers are closed before continuing..." -ForegroundColor Yellow
+$response = Read-Host "Press Enter to continue or 'X' to exit"
+if ($response -eq 'X' -or $response -eq 'x') { exit }
+
+# Install SQLite if needed
+if (-not (Install-SQLiteIfNeeded -ForceReinstall $ForceSQLiteReinstall)) {
+    Write-Host "SQLite3 is required. Exiting." -ForegroundColor Red
     exit 1
 }
 
-# Close browsers
-Close-BrowserProcesses
+# Define browser paths
+$browsers = @(
+    @{Name = "Google Chrome"; DataPath = "$env:LOCALAPPDATA\Google\Chrome\User Data"},
+    @{Name = "Microsoft Edge"; DataPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"},
+    @{Name = "Brave Browser"; DataPath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"}
+)
 
-# Download LaZagne
-if (-not (Download-LaZagne)) {
-    Write-Host "Failed to download LaZagne. Exiting." -ForegroundColor Red
-    exit 1
+$allPasswords = @()
+
+foreach ($browser in $browsers) {
+    if (Test-Path $browser.DataPath) {
+        $passwords = Get-BrowserPasswords -BrowserName $browser.Name -DataPath $browser.DataPath
+        $allPasswords += $passwords
+    } else {
+        Write-Host "$($browser.Name) not found" -ForegroundColor DarkGray
+    }
 }
-
-# Run extraction
-$allPasswords = Run-LaZagne
 
 # Display results
 if ($allPasswords.Count -gt 0) {
-    Write-Host "`nSuccessfully processed $($allPasswords.Count) password entries:`n" -ForegroundColor Green
+    Write-Host "`nProcessed $($allPasswords.Count) passwords:" -ForegroundColor Green
+    
+    # Count successfully decrypted passwords
+    $successCount = ($allPasswords | Where-Object { 
+        $_.Password -notmatch "\[.*\]" -and $_.Password -ne "[No Data]" 
+    }).Count
+    
+    $successRate = [math]::Round(($successCount / $allPasswords.Count) * 100, 2)
+    
+    # Show sample
     $allPasswords | Select-Object -First 10 | Format-Table -Property Browser, URL, Username, Password -AutoSize
     
-    # Summary by browser
+    # Export to CSV
+    try {
+        # Close Excel if open to prevent file locking
+        Get-Process -Name "EXCEL" -ErrorAction SilentlyContinue | ForEach-Object {
+            $_.CloseMainWindow() | Out-Null
+        }
+        Start-Sleep -Seconds 2
+        
+        $allPasswords | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8 -Force
+        Write-Host "`nExported to: $CSVPath" -ForegroundColor Green
+        Write-Host "Success rate: $successRate% ($successCount/$($allPasswords.Count))" -ForegroundColor Cyan
+        
+    } catch {
+        Write-Warning "CSV export failed: $($_.Exception.Message)"
+    }
+    
+    # Show summary
     $browserStats = $allPasswords | Group-Object Browser | ForEach-Object {
+        $successCount = ($_.Group | Where-Object { 
+            $_.Password -notmatch "\[.*\]" -and $_.Password -ne "[No Data]" 
+        }).Count
+        
         [PSCustomObject]@{
             Browser = $_.Name
-            Passwords = $_.Count
+            Total = $_.Count
+            Decrypted = $successCount
+            SuccessRate = "$([math]::Round(($successCount / $_.Count) * 100, 2))%"
         }
     }
-    Write-Host "`nPassword Summary by Browser:" -ForegroundColor Cyan
+    
+    Write-Host "`nSummary:" -ForegroundColor Cyan
     $browserStats | Format-Table -AutoSize
+    
 } else {
-    Write-Host "`nNo passwords found or processed." -ForegroundColor Yellow
+    Write-Host "No passwords found or decrypted." -ForegroundColor Yellow
 }
 
-# Cleanup
-Remove-Item $lazagneExe -Force -ErrorAction SilentlyContinue
-Remove-Item ".\lazagne_output_$timestamp.txt" -Force -ErrorAction SilentlyContinue
-
-Write-Host "`nNotes:" -ForegroundColor Cyan
-Write-Host "1. LaZagne.exe is deleted after use." -ForegroundColor Cyan
-Write-Host "2. Run as admin for full access to encrypted passwords." -ForegroundColor Cyan
-Write-Host "3. If no passwords are found, ensure browsers have saved credentials." -ForegroundColor Cyan
+Write-Host "`nProcess completed." -ForegroundColor Green
