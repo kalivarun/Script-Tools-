@@ -85,12 +85,8 @@ function Decrypt-v20Password {
     
     try {
         # v20 encryption structure is different from v10/v11
-        # It uses a different key derivation and encryption method
-        
-        # For v20, we need to use a different approach
-        # This is a simplified attempt - may not work for all cases
-        
-        if ($EncryptedData.Length < 20) {
+        # Check if data is long enough
+        if ($EncryptedData.Length -lt 20) {
             return "[v20 data too short]"
         }
         
@@ -101,15 +97,12 @@ function Decrypt-v20Password {
             return $result
         }
         
-        # Method 2: Try to extract potential encrypted payload
-        # v20 might have a different structure than standard AES-GCM
-        
-        # Method 3: Try to use the master key with different parameters
+        # Method 2: Try to use the master key with different parameters
         if ($MasterKey) {
             # This is a speculative approach - may need adjustment
             try {
                 # Try to decrypt using the master key with different offset
-                if ($EncryptedData.Length > 16) {
+                if ($EncryptedData.Length -gt 16) {
                     # Skip the v20 prefix and try to decrypt the rest
                     $payload = $EncryptedData[4..($EncryptedData.Length - 1)]
                     $result = Get-DecryptedData $payload
