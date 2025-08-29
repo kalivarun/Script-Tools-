@@ -1,0 +1,165 @@
+# Browser Password Decryption Script
+# Run this on the ORIGINAL system where passwords were encrypted
+
+param(
+    [string]$EncryptedJsonPath = ".\BrowserEncryptedData.json",
+    [string]$DecryptedCsvPath = ".\DecryptedPasswords.csv"
+)
+
+Write-Host "Browser Password Decryption Tool" -ForegroundColor Green
+Write-Host "=================================" -ForegroundColor Green
+
+# Load required assemblies
+Add-Type -AssemblyName System.Security
+
+# DPAPI Decryption Class
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class DPAPI {
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern bool CryptUnprotectData(
+        ref DATA_BLOB pCipherText,
+        string pszDescription,
+        ref DATA_BLOB pEntropy,
+        IntPtr pReserved,
+        IntPtr pPromptStruct,
+        int dwFlags,
+        ref DATA_BLOB pPlainText);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct DATA_BLOB {
+        public int cbData;
+        public IntPtr pbData;
+    }
+
+    public static byte[] Decrypt(byte[] cipherText) {
+        DATA_BLOB cipherBlob = new DATA_BLOB();
+        DATA_BLOB plainBlob = new DATA_BLOB();
+        DATA_BLOB entropyBlob = new DATA_BLOB();
+
+        try {
+            cipherBlob.pbData = Marshal.AllocHGlobal(cipherText.Length);
+            cipherBlob.cbData = cipherText.Length;
+            Marshal.Copy(cipherText, 0, cipherBlob.pbData, cipherText.Length);
+
+            if (!CryptUnprotectData(ref cipherBlob, null, ref entropyBlob, IntPtr.Zero, IntPtr.Zero, 0, ref plainBlob))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+
+            byte[] plainText = new byte[plainBlob.cbData];
+            Marshal.Copy(plainBlob.pbData, plainText, 0, plainBlob.cbData);
+            return plainText;
+        }
+        finally {
+            if (cipherBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(cipherBlob.pbData);
+            if (plainBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(plainBlob.pbData);
+            if (entropyBlob.pbData != IntPtr.Zero) Marshal.FreeHGlobal(entropyBlob.pbData);
+        }
+    }
+}
+"@
+
+# Function to decrypt master key
+function Decrypt-MasterKey {
+    param([string]$EncryptedKeyBase64)
+    
+    try {
+        $encryptedKeyBytes = [System.Convert]::FromBase64String($EncryptedKeyBase64)
+        # Remove DPAPI prefix (first 5 bytes: 'DPAPI')
+        $encryptedKeyBytes = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
+        return [DPAPI]::Decrypt($encryptedKeyBytes)
+    }
+    catch {
+        Write-Error "Failed to decrypt master key: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# Function to decrypt password
+function Decrypt-Password {
+    param(
+        [string]$HexData,
+        [byte[]]$MasterKey,
+        [string]$EncryptionVersion
+    )
+    
+    try {
+        # Convert hex string to bytes
+        $encryptedBytes = for ($i = 0; $i -lt $HexData.Length; $i += 2) {
+            [Convert]::ToByte($HexData.Substring($i, 2), 16)
+        }
+        
+        if ($EncryptionVersion -eq "v10" -or $EncryptionVersion -eq "v11") {
+            # AES-GCM encryption - requires more complex decryption
+            # This is simplified; real implementation needs proper AES-GCM handling
+            Write-Warning "AES-GCM decryption not fully implemented in this example"
+            return "[AES-GCM Encrypted - Need Full Decryption Tool]"
+        }
+        else {
+            # Assume DPAPI encryption
+            $decryptedBytes = [DPAPI]::Decrypt($encryptedBytes)
+            return [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
+        }
+    }
+    catch {
+        return "[Decryption Failed: $($_.Exception.Message)]"
+    }
+}
+
+# Main decryption process
+try {
+    if (-not (Test-Path $EncryptedJsonPath)) {
+        Write-Error "Encrypted JSON file not found: $EncryptedJsonPath"
+        exit 1
+    }
+
+    $encryptedData = Get-Content $EncryptedJsonPath -Raw | ConvertFrom-Json
+    $decryptedResults = @()
+
+    foreach ($masterKeyInfo in $encryptedData.MasterKeys) {
+        Write-Host "Decrypting master key for $($masterKeyInfo.Browser)..." -ForegroundColor Yellow
+        
+        $masterKey = Decrypt-MasterKey $masterKeyInfo.EncryptedKey
+        if (-not $masterKey) {
+            Write-Warning "Failed to decrypt master key for $($masterKeyInfo.Browser)"
+            continue
+        }
+
+        Write-Host "Successfully decrypted master key for $($masterKeyInfo.Browser)" -ForegroundColor Green
+
+        # Find passwords for this browser
+        $browserPasswords = $encryptedData.EncryptedPasswords | Where-Object { $_.Browser -eq $masterKeyInfo.Browser }
+        
+        foreach ($password in $browserPasswords) {
+            $plainPassword = Decrypt-Password -HexData $password.HexData -MasterKey $masterKey -EncryptionVersion $password.EncryptionVersion
+            
+            $decryptedResults += [PSCustomObject]@{
+                Browser = $password.Browser
+                Profile = $password.Profile
+                URL = $password.URL
+                Username = $password.Username
+                Password = $plainPassword
+                EncryptionVersion = $password.EncryptionVersion
+                DateCreated = $password.DateCreated
+                DateLastUsed = $password.DateLastUsed
+                DecryptionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+        }
+    }
+
+    # Export results
+    if ($decryptedResults.Count -gt 0) {
+        $decryptedResults | Export-Csv -Path $DecryptedCsvPath -NoTypeInformation -Encoding UTF8
+        Write-Host "Successfully decrypted $($decryptedResults.Count) passwords!" -ForegroundColor Green
+        Write-Host "Decrypted passwords saved to: $DecryptedCsvPath" -ForegroundColor Green
+        
+        # Show sample
+        $decryptedResults | Select-Object -First 5 | Format-Table -Property Browser, URL, Username, Password -AutoSize
+    }
+    else {
+        Write-Host "No passwords were successfully decrypted." -ForegroundColor Yellow
+    }
+}
+catch {
+    Write-Error "Decryption process failed: $($_.Exception.Message)"
+}
