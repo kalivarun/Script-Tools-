@@ -1,3 +1,7 @@
+# USE THE BELOW COMMAND TO BYPASS SSL VALIDATION ERROR
+# [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
+
 # Enhanced Multi-Browser and Network Password Extraction with Improved RDP Credential Extraction
 # Removed CSV generation, added proper RDP credential extraction, improved file naming and cleanup
 
