@@ -1,0 +1,34 @@
+#!/bin/bash
+set -e
+
+echo "[*] Updating system..."
+sudo apt update && sudo apt upgrade -y
+
+echo "[*] Installing dependencies..."
+sudo apt install -y software-properties-common gnupg
+
+echo "[*] Adding Greenbone repository..."
+sudo add-apt-repository -y ppa:mrazavi/gvm
+sudo apt update
+
+echo "[*] Installing GVM (OpenVAS)..."
+sudo apt install -y gvm
+
+echo "[*] Running gvm-setup (this may take a while)..."
+sudo gvm-setup
+
+echo "[*] Adding current user to redis group..."
+sudo usermod -aG redis $USER
+
+echo "[*] Starting GVM services..."
+sudo gvm-start
+
+echo "[*] Checking setup..."
+sudo gvm-check-setup
+
+echo
+echo "======================================================="
+echo "✅ OpenVAS (GVM) installation complete!"
+echo "👉 Access the web UI at: https://127.0.0.1:9392"
+echo "👉 Default admin credentials were shown during gvm-setup"
+echo "======================================================="
