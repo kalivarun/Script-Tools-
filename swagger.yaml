@@ -1,12 +1,12 @@
 swagger: "2.0"
 info:
   title: "XSS Test"
-  description: "<svg/onload=alert(document.domain)>"
+  description: "<div style=background:url('javascript:alert(document.domain)')>"
   version: "1.0"
 paths:
-  /testVatins:
+  /test:
     get:
-      summary: "test Vatins"
+      summary: "Test"
       responses:
         '200':
           description: "OK"
