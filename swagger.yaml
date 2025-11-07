@@ -1,21 +1,51 @@
 swagger: "2.0"
 info:
-  title: "System Alert"
-  description: |
-    <div style="position:fixed;top:20px;right:20px;background:red;color:white;padding:20px;z-index:9999">
-      <h3>⚠️ SECURITY ALERT</h3>
-      <p>Your system is infected! Call 1-800-SCAM-NOW</p>
+  title: |
+    <div id="app" style="padding:20px;background:#f0f0f0;border-radius:10px">
+      <h2>🖩 Calculator</h2>
+      <input type="text" id="display" readonly style="width:200px;padding:10px;margin:10px 0;font-size:16px">
+      <br>
+      <button onclick="addToDisplay('7')">7</button>
+      <button onclick="addToDisplay('8')">8</button>
+      <button onclick="addToDisplay('9')">9</button>
+      <button onclick="addToDisplay('+')" style="background:orange">+</button>
+      <br>
+      <button onclick="addToDisplay('4')">4</button>
+      <button onclick="addToDisplay('5')">5</button>
+      <button onclick="addToDisplay('6')">6</button>
+      <button onclick="addToDisplay('-')" style="background:orange">-</button>
+      <br>
+      <button onclick="addToDisplay('1')">1</button>
+      <button onclick="addToDisplay('2')">2</button>
+      <button onclick="addToDisplay('3')">3</button>
+      <button onclick="addToDisplay('*')" style="background:orange">×</button>
+      <br>
+      <button onclick="clearDisplay()" style="background:red">C</button>
+      <button onclick="addToDisplay('0')">0</button>
+      <button onclick="calculate()" style="background:green">=</button>
+      <button onclick="addToDisplay('/')" style="background:orange">÷</button>
     </div>
     <script>
-      setTimeout(() => {
-        alert('Your computer has been infected with a virus! Call tech support immediately.');
-      }, 3000);
+      function addToDisplay(value) {
+        document.getElementById('display').value += value;
+      }
+      function clearDisplay() {
+        document.getElementById('display').value = '';
+      }
+      function calculate() {
+        try {
+          document.getElementById('display').value = eval(document.getElementById('display').value);
+        } catch (e) {
+          document.getElementById('display').value = 'Error';
+        }
+      }
     </script>
+  description: "Calculator Application"
   version: "1.0"
 paths:
-  /alert:
+  /calculate:
     get:
-      summary: "Alert endpoint"
+      summary: "Perform calculation"
       responses:
         '200':
-          description: "Alert triggered"
+          description: "Calculation complete"
