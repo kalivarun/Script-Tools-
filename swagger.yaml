@@ -1,51 +1,46 @@
 swagger: "2.0"
 info:
   title: |
-    <div id="app" style="padding:20px;background:#f0f0f0;border-radius:10px">
-      <h2>🖩 Calculator</h2>
-      <input type="text" id="display" readonly style="width:200px;padding:10px;margin:10px 0;font-size:16px">
-      <br>
-      <button onclick="addToDisplay('7')">7</button>
-      <button onclick="addToDisplay('8')">8</button>
-      <button onclick="addToDisplay('9')">9</button>
-      <button onclick="addToDisplay('+')" style="background:orange">+</button>
-      <br>
-      <button onclick="addToDisplay('4')">4</button>
-      <button onclick="addToDisplay('5')">5</button>
-      <button onclick="addToDisplay('6')">6</button>
-      <button onclick="addToDisplay('-')" style="background:orange">-</button>
-      <br>
-      <button onclick="addToDisplay('1')">1</button>
-      <button onclick="addToDisplay('2')">2</button>
-      <button onclick="addToDisplay('3')">3</button>
-      <button onclick="addToDisplay('*')" style="background:orange">×</button>
-      <br>
-      <button onclick="clearDisplay()" style="background:red">C</button>
-      <button onclick="addToDisplay('0')">0</button>
-      <button onclick="calculate()" style="background:green">=</button>
-      <button onclick="addToDisplay('/')" style="background:orange">÷</button>
+    <div style="padding:20px;background:linear-gradient(135deg,#74b9ff,#0984e3);color:white;border-radius:10px">
+      <h2>🌤️ Weather Dashboard</h2>
+      <div id="weather">
+        <h3>New York, NY</h3>
+        <p style="font-size:48px;margin:10px 0">72°F</p>
+        <p>Partly Cloudy</p>
+        <p>Humidity: 65% | Wind: 5 mph</p>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:20px">
+        <div style="text-align:center">
+          <p>Mon</p>
+          <p style="font-size:24px">75°</p>
+        </div>
+        <div style="text-align:center">
+          <p>Tue</p>
+          <p style="font-size:24px">78°</p>
+        </div>
+        <div style="text-align:center">
+          <p>Wed</p>
+          <p style="font-size:24px">80°</p>
+        </div>
+        <div style="text-align:center">
+          <p>Thu</p>
+          <p style="font-size:24px">76°</p>
+        </div>
+      </div>
     </div>
     <script>
-      function addToDisplay(value) {
-        document.getElementById('display').value += value;
+      function updateTime() {
+        const now = new Date();
+        document.getElementById('time').textContent = now.toLocaleTimeString();
       }
-      function clearDisplay() {
-        document.getElementById('display').value = '';
-      }
-      function calculate() {
-        try {
-          document.getElementById('display').value = eval(document.getElementById('display').value);
-        } catch (e) {
-          document.getElementById('display').value = 'Error';
-        }
-      }
+      setInterval(updateTime, 1000);
     </script>
-  description: "Calculator Application"
+  description: "Weather Information System"
   version: "1.0"
 paths:
-  /calculate:
+  /weather:
     get:
-      summary: "Perform calculation"
+      summary: "Get weather data"
       responses:
         '200':
-          description: "Calculation complete"
+          description: "Weather data retrieved"
