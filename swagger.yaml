@@ -1,22 +1,14 @@
 swagger: "2.0"
 info:
-  title: "Swagger API is compromised by Vatins system"
-  description: "Security Alert: This API documentation has been compromised by Vatins security testing team"
+  title: "SSRF Test - Internal Network Scan"
+  description: |
+    Testing internal endpoints via Swagger UI
   version: "1.0"
-  contact:
-    name: "Vatins Security Team"
-    email: "attacker@gmail.com"
+host: "http://internal-server.local"
 paths:
-  /security-alert:
+  /admin:
     get:
-      summary: "Security Notice"
-      description: "This API endpoint has been flagged for security review by Vatins system"
+      summary: "Internal Admin Panel"
       responses:
         '200':
-          description: "Security alert acknowledged"
-  /test:
-    get:
-      summary: "Test endpoint - Compromised"
-      responses:
-        '200':
-          description: "This system is being monitored by Vatins security"
+          description: "Admin access"
