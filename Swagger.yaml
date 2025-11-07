@@ -1,5 +1,7 @@
 swagger: "2.0"
 info:
-  title: <math><mtext><select><![CDATA[</mtext><img src=x onerror=alert(document.domain)>]]>
-  description: Mutation XSS Test
+  title: <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <script xlink:href="data:text/javascript,alert(document.domain)"/>
+  </svg>
+  description: Namespace Bypass
   version: 1.0
