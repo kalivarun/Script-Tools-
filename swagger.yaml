@@ -4,9 +4,9 @@ info:
   description: "<svg/onload=alert(document.domain)>"
   version: "1.0"
 paths:
-  /test:
+  /testVatins:
     get:
-      summary: "Test"
+      summary: "test Vatins"
       responses:
         '200':
           description: "OK"
