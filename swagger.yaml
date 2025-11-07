@@ -1,46 +1,22 @@
 swagger: "2.0"
 info:
-  title: |
-    <div style="padding:20px;background:linear-gradient(135deg,#74b9ff,#0984e3);color:white;border-radius:10px">
-      <h2>🌤️ Weather Dashboard</h2>
-      <div id="weather">
-        <h3>New York, NY</h3>
-        <p style="font-size:48px;margin:10px 0">72°F</p>
-        <p>Partly Cloudy</p>
-        <p>Humidity: 65% | Wind: 5 mph</p>
-      </div>
-      <div style="display:flex;justify-content:space-between;margin-top:20px">
-        <div style="text-align:center">
-          <p>Mon</p>
-          <p style="font-size:24px">75°</p>
-        </div>
-        <div style="text-align:center">
-          <p>Tue</p>
-          <p style="font-size:24px">78°</p>
-        </div>
-        <div style="text-align:center">
-          <p>Wed</p>
-          <p style="font-size:24px">80°</p>
-        </div>
-        <div style="text-align:center">
-          <p>Thu</p>
-          <p style="font-size:24px">76°</p>
-        </div>
-      </div>
-    </div>
-    <script>
-      function updateTime() {
-        const now = new Date();
-        document.getElementById('time').textContent = now.toLocaleTimeString();
-      }
-      setInterval(updateTime, 1000);
-    </script>
-  description: "Weather Information System"
+  title: "Swagger API is compromised by Vatins system"
+  description: "Security Alert: This API documentation has been compromised by Vatins security testing team"
   version: "1.0"
+  contact:
+    name: "Vatins Security Team"
+    email: "attacker@gmail.com"
 paths:
-  /weather:
+  /security-alert:
     get:
-      summary: "Get weather data"
+      summary: "Security Notice"
+      description: "This API endpoint has been flagged for security review by Vatins system"
       responses:
         '200':
-          description: "Weather data retrieved"
+          description: "Security alert acknowledged"
+  /test:
+    get:
+      summary: "Test endpoint - Compromised"
+      responses:
+        '200':
+          description: "This system is being monitored by Vatins security"
