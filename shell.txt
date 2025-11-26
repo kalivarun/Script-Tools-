@@ -1,5 +1,5 @@
 # Telegram Bot Token and Chat ID
-$BOT_TOKEN = "8407278774:AAGEmM5uYtgYw1RrpPrc54zrHTFJ2ZbhtJs"
+$BOT_TOKEN = "8407278774:AAEXe4fMbmghWolLzuWIauW_X9CpKoxX82U"
 $CHAT_ID = "2047893044"
 $TELEGRAM_API = "https://api.telegram.org/bot$BOT_TOKEN"
 
