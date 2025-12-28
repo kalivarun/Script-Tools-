@@ -1,5 +1,0 @@
-sudo apt update
-sudo apt install -y gvm
-sudo gvm-setup
-sudo gvm-check-setup
-sudo gvm-start
